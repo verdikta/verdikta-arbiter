@@ -135,7 +135,10 @@ juror that legitimately found the value in search results without opening a page
 Today a juror whose reply cannot be parsed is a `parsing_error`. It is excluded from the
 aggregate, and the request still succeeds if at least `MIN_SUCCESSFUL_MODELS_PERCENT` (50 %)
 of jurors answered. Failed and timed-out jurors are excluded the same way. So with two
-jurors, one can decide alone, which is the hole 3.3 closes. #101 adds one repair call before
+jurors, one can decide alone, which is the hole 3.3 closes. (Since 2026-11 this holds only
+on a node whose operator set that variable: by default every juror must answer, and a juror
+that fails for any reason ends the request with no commit, `ai-node/src/utils/juryQuorum.ts`.
+A juror that this proposal would exclude is a failed juror under that rule.) #101 adds one repair call before
 a reply counts as unparseable. It cut parse failures from 4/32 to 0/32 on the v4 smoke cases,
 but it does not remove them.
 

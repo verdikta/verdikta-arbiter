@@ -21,6 +21,17 @@ HARDHAT_NETWORK=base_sepolia node scripts/unregister-oracle-cl.js \
   --jobids "38f19572c51041baa5f2dea284614590" \
           "39515f75ac2947beb7f2eeae4d8eaf3e"
 
+  --all-registered   also exit every other job id the keeper holds for --oracle
+                     (read from its ArbiterRegistered events), and fail unless
+                     none of the operator's job ids is left selectable
+                     afterwards. A job id that installer/.contracts no longer
+                     names cannot then be left registered with no node behind
+                     it. --jobids is optional with it. Without it such ids are
+                     reported and left alone.
+  --from-block N     the first block searched for ArbiterRegistered events
+                     (default 0; give the keeper's deployment block when the
+                     RPC limits the range of a log query).
+
   --wrappedverdikta is accepted for backwards compatibility; the keeper names its token.
 */
 
@@ -30,6 +41,7 @@ const { ethers } = hre;
 const yargs = require("yargs/yargs");
 const { hideBin } = require("yargs/helpers");
 const { createInFlightGuard } = require("./lib/inflight.js");
+const { runExits, when } = require("./lib/registry.js");
 
 /* ------------------------------------------------------------------- */
 /* Minimal ABIs (v2)                                                   */
@@ -44,9 +56,9 @@ const KeeperABI = [
   "function keyOf(address oracle, bytes32 jobId) view returns (bytes32)",
   "function getArbiter(bytes32 key) view returns (tuple(address oracle, uint256 quality, uint256 timeliness, uint256 offenses, uint256 flags, uint256 blockedUntil, uint256 fee, uint256 callSentAt, uint256 callAnsweredAt, uint256 stake, uint256 checkpoints, uint256 exitAt))",
   "function verdiktaToken() view returns (address)",
-  "function owner() view returns (address)"
+  "function owner() view returns (address)",
+  "event ArbiterRegistered(bytes32 indexed key, address indexed oracle, bytes32 jobId, uint256 fee)"
 ];
-const F_REGISTERED = 1n, F_EXITING = 8n;
 
 const ERC20_BALANCE = [
   "function balanceOf(address) view returns (uint256)"
@@ -55,15 +67,6 @@ const ERC20_BALANCE = [
 const OWNER_ABI = [
   "function owner() view returns (address)"
 ];
-
-/* Helper: accept bytes32 or plain text ID --------------------------- */
-const toBytes32 = (id) => {
-  if (/^0x[0-9a-f]{64}$/i.test(id)) return id;          // already bytes32
-  const bytes = ethers.toUtf8Bytes(id);
-  if (bytes.length > 32) throw new Error(`Job ID too long: ${id}`);
-  return ethers.hexlify(bytes).padEnd(66, "0");
-};
-const when = (t) => new Date(Number(t) * 1000).toISOString();
 
 /* ------------------------------------------------------------------- */
 /* Main                                                                */
@@ -75,7 +78,11 @@ const when = (t) => new Date(Number(t) * 1000).toISOString();
       .option("aggregator",      { alias: "a", type: "string", demandOption: true })
       .option("oracle",          { alias: "o", type: "string", demandOption: true })
       .option("wrappedverdikta", { alias: "w", type: "string", demandOption: false, describe: "ignored: the keeper names its token" })
-      .option("jobids",          { alias: "j", type: "array",  demandOption: true })
+      // string: true — yargs would turn an all-digit job id into a number.
+      .option("jobids",          { alias: "j", type: "array",  string: true, default: [] })
+      .option("all-registered",  { type: "boolean", default: false })
+      .option("from-block",      { type: "number", default: 0 })
+      .check((a) => a.jobids.length > 0 || a["all-registered"] || "Give --jobids, --all-registered, or both")
       .strict()
       .argv;
 
@@ -103,56 +110,48 @@ const when = (t) => new Date(Number(t) * 1000).toISOString();
     const balBefore = await verdikta.balanceOf(oracleOwner);
     console.log("Operator owner's wVDKA balance:", ethers.formatEther(balBefore));
 
-    /* Loop through job IDs ------------------------------------------- */
-    let requested = 0, completed = 0, pending = 0, latestExit = 0n;
-    for (const rawId of argv.jobids) {
-      const jobId = toBytes32(rawId);
-      const key = await keeper.keyOf(argv.oracle, jobId);
-      console.log(`\nJobID ${rawId} → ${jobId} (key ${key})`);
-      const v = await keeper.getArbiter(key);
-      const flags = BigInt(v.flags);
-      const now = BigInt((await ethers.provider.getBlock("latest")).timestamp);
+    /* Exit ------------------------------------------------------------ */
+    /* The keeper keeps no per-operator list: the keys it ever registered for
+       this operator are in its ArbiterRegistered events (the operator is
+       indexed); registry.js reads each one's state with getArbiter. A count
+       change exits every job in a row; on a delegated (EIP-7702) sender Infura
+       rejects the next send once a few are in flight (#38), so every send is
+       settled and retried. */
+    const reader = {
+      registrations: async (oracle) => {
+        const logs = await keeper.queryFilter(keeper.filters.ArbiterRegistered(null, oracle), argv["from-block"], "latest");
+        return logs.map((l) => ({ key: l.args.key, jobId: l.args.jobId }));
+      },
+      keyOf: (oracle, jobId) => keeper.keyOf(oracle, jobId),
+      getArbiter: (key) => keeper.getArbiter(key),
+    };
+    const now = async () => BigInt((await ethers.provider.getBlock("latest")).timestamp);
 
-      if ((flags & F_REGISTERED) === 0n) {
-        console.log("Not registered – skipping");
-        continue;
-      }
-      if ((flags & F_EXITING) === 0n) {
-        await sendWithRetry(`requestExit ${rawId}`, async () => {
+    const result = await runExits({
+      keeper: reader,
+      oracle: argv.oracle,
+      jobIds: argv.jobids,
+      allRegistered: argv["all-registered"],
+      now,
+      requestExit: (key, label) =>
+        sendWithRetry(`requestExit ${label}`, async () => {
           const tx = await keeper.requestExit(key);
           await tx.wait();
           console.log("✓ Exit requested (tx:", tx.hash, ")");
-        });
-        const exitAt = BigInt((await keeper.getArbiter(key)).exitAt);
-        if (exitAt > latestExit) latestExit = exitAt;
-        console.log(`  No longer selectable. The stake comes back with completeExit from ${when(exitAt)}: run this script again then.`);
-        requested++;
-        continue;
-      }
-      const exitAt = BigInt(v.exitAt);
-      if (now < exitAt) {
-        console.log(`Exit pending: the stake can be withdrawn from ${when(exitAt)} – skipping`);
-        if (exitAt > latestExit) latestExit = exitAt;
-        pending++;
-        continue;
-      }
-      if (BigInt(v.blockedUntil) > now) {
-        console.log(`Exit pending: blocked until ${when(v.blockedUntil)}, then completeExit can run – skipping`);
-        pending++;
-        continue;
-      }
-      await sendWithRetry(`completeExit ${rawId}`, async () => {
-        const tx = await keeper.completeExit(key);
-        await tx.wait();
-        console.log("✓ Exit completed: stake refunded to the operator's owner (tx:", tx.hash, ")");
-      });
-      completed++;
-    }
+        }),
+      completeExit: (key, label) =>
+        sendWithRetry(`completeExit ${label}`, async () => {
+          const tx = await keeper.completeExit(key);
+          await tx.wait();
+          console.log("✓ Exit completed: stake refunded to the operator's owner (tx:", tx.hash, ")");
+        }),
+    });
 
     const balAfter = await verdikta.balanceOf(oracleOwner);
     console.log("\nOperator owner's wVDKA balance:", ethers.formatEther(balAfter));
-    console.log(`Exits requested: ${requested}, completed: ${completed}, still pending: ${pending}`);
-    if (requested + pending > 0) console.log(`Run this script again from ${when(latestExit)} to complete the pending exits.`);
+    const { requested, completed, pending, latestExit } = result;
+    console.log(`Exits requested: ${requested.length}, completed: ${completed.length}, still pending: ${pending.length}`);
+    if (requested.length + pending.length > 0) console.log(`Run this script again from ${when(latestExit)} to complete the pending exits.`);
     console.log("Oracle exit step completed successfully");
     process.exit(0);
   } catch (err) {

@@ -264,11 +264,14 @@ function revealChecks({ reveals, responseCount, error, reports, combinedCids }) 
   ];
 }
 
-/** An abstention scenario: nobody committed, and no verdict came. commitReceived null means it could not be read. */
-function abstainChecks({ status, commitReceived }) {
+/**
+ * An abstention scenario: nobody committed, and no verdict came. commitReceived null means it
+ * could not be read. `prefix` names what was watched: a claim, or a text request ("round").
+ */
+function abstainChecks({ status, commitReceived }, prefix = 'claim') {
   return [
-    assert('claim.noCommit', commitReceived === 0, `${commitReceived === null ? 'the status could not be read' : `${commitReceived} commit(s)`}`),
-    assert('claim.noVerdict', status !== 'fulfilled', `status=${status}`)
+    assert(`${prefix}.noCommit`, commitReceived === 0, `${commitReceived === null ? 'the status could not be read' : `${commitReceived} commit(s)`}`),
+    assert(`${prefix}.noVerdict`, status !== 'fulfilled', `status=${status}`)
   ];
 }
 

@@ -82,6 +82,10 @@ New fields are **optional** and **additive**:
 
 ### Partial Success (Some Models Failed, But Evaluation Succeeded)
 
+> Since 2026-11 this response exists only on a node whose operator set
+> `MIN_SUCCESSFUL_MODELS_PERCENT` below 1. By default every juror must answer, and a
+> failed juror is the error case below (`ai-node/API_RESPONSE_SPECIFICATION.md`).
+
 ```json
 {
   "scores": [
@@ -89,7 +93,7 @@ New fields are **optional** and **additive**:
     {"outcome": "Reject", "score": 350000},
     {"outcome": "Request More Info", "score": 50000}
   ],
-  "justification": "Based on analysis from available models...\n\nFrom model gpt-5:\n[justification]\n\nFrom model claude-sonnet-4:\nModel timed out or failed: Model timed out after 120000ms",
+  "justification": "Based on analysis from available models...\n\nFrom model gpt-5:\n[justification]\n\nFrom model claude-sonnet-4:\nModel timed out or failed: timed out after 120 s",
   "timestamp": "2025-01-06T12:45:30.123Z",
   
   "metadata": {
@@ -184,6 +188,12 @@ New fields are **optional** and **additive**:
 ```
 
 ### API Error from Provider
+
+A provider's message is redacted before it enters `error_message`, a warning or
+the 400's `error` (keys, URLs beyond scheme and host, long opaque ids; at most
+500 characters), and the justification describes a failed model in the node's
+own words. See `ai-node/API_RESPONSE_SPECIFICATION.md`, "Provider text in a
+response". The examples below show messages with nothing to redact.
 
 ```json
 {
@@ -388,8 +398,9 @@ New fields are **optional** and **additive**:
 ### Warning Types
 - `model_timeout` - Model timed out (non-catastrophic)
 - `model_failure` - Model failed (non-catastrophic)
-- `attachment_unsupported` - Model doesn't support attachment type
-- `attachment_skipped` - Attachment was skipped during processing
+- `pdf_text_only` - A juror that reads PDFs was sent a PDF's extracted text, not the file: a limit, or the provider rejected the file (per juror, with the reason; `ai-node/API_RESPONSE_SPECIFICATION.md`, "PDF Attachments"). It replaces `attachment_unsupported`, which no code emitted
+- `attachment_skipped` - An attachment was not shown: to anyone (no `model`), or to one juror (`model` set: a PDF with no text for a juror that is not sent the file)
+- `attachments_not_sent` - A juror's model is sent no attachments at all, or images only (per juror)
 - `attachment_processing_error` - Error processing attachments
 
 ### Warning Severity Levels

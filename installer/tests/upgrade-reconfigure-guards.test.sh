@@ -22,13 +22,32 @@ check() { # check NAME PATTERN [MIN_COUNT]
 bash -n "$S" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL syntax"; }
 # The script really is errexit (the reason the guards exist).
 check "errexit on" '^set -e'
-# v2: the reconfiguration no longer deregisters (a registered node is refused, since new job ids
-# are new keys): pin the refusal, and that nothing deregisters there.
+# v2: new job ids are new keys, so a node registered by the file's account is refused
+# outright (no exit is requested for it here): pin the refusal.
 check "registered node refused" 'RECONF_SUMMARY="the arbiter count was not changed: this node is registered'
 check "abort sets failed" 'RECONF_ABORT=1'
+# The exit check for a node the file calls unregistered (main's #190, in v2 terms: the
+# keeper decides, not the file): its rc read with `||` (unattended and interactive call
+# alike), its output counted.
+check "dereg rc initialised" '^[[:space:]]*dereg_rc=0[[:space:]]*$'
+check "dereg rc" 'run_echo_capture bash unregister-oracle.sh --unattended [|][|] dereg_rc=\$\?'
+check "dereg rc (interactive)" 'run_echo_capture bash unregister-oracle.sh <<< .* [|][|] dereg_rc=\$\?'
+check "dereg env reaches the script" 'VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="\$RECONF_AGGREGATOR" run_echo_capture'
+# Every job id the keeper lists for the operator goes, not only the ones in
+# installer/.contracts (unattended, interactive, and the regenerate-job-specs path).
+check "dereg takes every registered id" 'VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="\$RECONF_AGGREGATOR" run_echo_capture'
+check "dereg takes every registered id (interactive)" 'VA_DEREGISTER_ALL_REGISTERED=y run_echo_capture bash unregister-oracle.sh <<<'
+check "the exit check runs whenever an aggregator is recorded and the node is not refused" 'elif \[ \$RECONF_DEREGISTER -eq 1 \]; then'
+check "regenerate: dereg rc" 'VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="\$aggregator_addr" bash unregister-oracle.sh --unattended [|][|] unregister_rc=\$\?'
+check "regenerate: dereg rc (interactive)" 'VA_DEREGISTER_ALL_REGISTERED=y bash unregister-oracle.sh <<< .* [|][|] unregister_rc=\$\?'
+check "regenerate: the function's exit code is read" 'regenerate_job_specs [|][|] REGEN_RC=\$\?'
+# The regenerate path no longer carries on after a failed deregistration.
+[ "$(grep -c 'Unregistration may have failed, but continuing' "$S")" -eq 0 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL regenerate still continues after a failed deregistration"; }
+check "dereg output captured" 'dereg_out="\$CAPTURED_OUT"'
 check "capture keeps the pipe status" 'set -o pipefail; "\$@" 2>&1 \| tee "\$_cap" >&2'
+# The exit check is the only unregister call in the reconfiguration (unattended and interactive).
 n=$(grep -cE 'run_echo_capture bash unregister-oracle.sh' "$S")
-[ "$n" -eq 0 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL the reconfiguration still deregisters ($n call(s))"; }
+[ "$n" -eq 2 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL expected 2 unregister calls in the reconfiguration, found $n"; }
 # configure-node and registration: their rc read with `||`.
 check "configure guarded" 'bash "\$SCRIPT_DIR/configure-node.sh"' 
 check "configure rc initialised" '^[[:space:]]*RECONF_RC=0[[:space:]]*$'

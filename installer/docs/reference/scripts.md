@@ -331,13 +331,29 @@ Takes the oracle's jobs off the dispatcher. With the v2 dispatcher this is two s
   the operator's owner and the job's class slots are freed. `completeExit` waits while the job is
   blocked.
 
-Each run does whichever step is due and prints when the next one is. Pausing (`setPaused`), fee
+Each run does whichever step is due and prints when the next one is. The job IDs are the ones in
+`installer/.contracts`; any other job ID the dispatcher holds for the operator contract (read from
+its `ArbiterRegistered` events) is named in the output and left alone, unless the run has
+`--all-registered` (or `VA_DEREGISTER_ALL_REGISTERED=y`): then those are exited too, and the run
+fails unless none of the operator's job IDs is left selectable. The upgrade's job-count change and
+job regeneration run it that way first for a node whose `.contracts` records an aggregator but says
+it is not registered, so a job ID the file no longer names is not left drawable with no node
+behind it. Pausing (`setPaused`), fee
 changes (`setFee`), stake top-ups (`topUpStake`), `requestHealthCall` and withdrawing fees
 (`withdrawEth` on the aggregator) have no script: see
 [Dispatcher Registration](../oracle/dispatcher.md#pause-fee-changes-and-exit).
 
 ```bash
 ~/verdikta-arbiter-node/unregister-oracle.sh
+```
+
+`--all-registered` (unattended: `VA_DEREGISTER_ALL_REGISTERED=y`) exits those other job IDs too
+and fails unless none of the operator's job IDs is left selectable. `upgrade-arbiter.sh` uses it
+before it replaces the jobs of a node the file calls unregistered; see "Stake and replaced jobs" in
+`maintenance/upgrading.md`.
+
+```bash
+~/verdikta-arbiter-node/unregister-oracle.sh --all-registered
 ```
 
 ---

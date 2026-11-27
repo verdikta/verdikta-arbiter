@@ -19,6 +19,7 @@ const {
   arbiterVersion,
   releaseCommit,
   versionChecks,
+  pdfInputChecks,
   requestArgs,
 } = require('./helpers');
 
@@ -311,6 +312,99 @@ async function runClaimScenario(ctx, scenario) {
   return { checks, metrics: { rounds: [round] } };
 }
 
+/**
+ * One text request to its result, and the checks on it. A throw means the request did not start
+ * or could not be followed. `strictEstimate`: never send on a failed gas estimate, as for a claim.
+ * `timeoutMs`: how long to wait for the result, when not the configured time.
+ *
+ * @returns {Promise<Array>} the checks
+ */
+async function textRound(ctx, scenario, { strictEstimate = false, timeoutMs = null } = {}) {
+  const { cfg, aggregator, l4, expect, opts } = ctx;
+  const start = Date.now();
+  const value = await aggregator.maxTotalFee(l4.fees.maxOracleFee);
+  const args = requestArgs(scenario, l4.fees, l4.classId);
+
+  // Estimate rather than trust config.l4.gasLimit: selection cost grows with
+  // the registry, and an out-of-gas request still pays for the whole limit.
+  let estimate = null;
+  try {
+    estimate = await aggregator.requestAIEvaluationWithApproval.estimateGas(...args, { value });
+  } catch (err) {
+    // A claim's request is not sent on a guess: a failed estimate here means selection
+    // would revert (no job in the class at this fee), and a reverted request still pays gas.
+    if (strictEstimate || isCanaryOnly(scenario)) throw new Error(`gas estimation failed (${err.shortMessage || err.message}): the request was not sent`);
+    console.log(chalk.yellow(`[l4] ${scenario.id}: gas estimation failed (${err.shortMessage || err.message}); using configured gasLimit=${l4.gasLimit}`));
+  }
+  const gasLimit = gasLimitFor(estimate, l4.gasLimit);
+  console.log(chalk.gray(`[l4] ${scenario.id}: submitting ${args[0].length} CID(s) (value=${ethers.formatEther(value)} ETH, gasLimit=${gasLimit}${estimate === null ? '' : `, estimate=${estimate}`})…`));
+
+  const tx = await aggregator.requestAIEvaluationWithApproval(...args, { value, gasLimit });
+  const receipt = await tx.wait(1);
+  const aggId = parseAggId(aggregator, receipt);
+
+  const checks = [];
+  checks.push(A.assert('tx.mined', receipt.status === 1, `tx=${tx.hash}`));
+  checks.push(A.assert('event.RequestAIEvaluation', !!aggId, aggId ? `aggId=${aggId}` : 'RequestAIEvaluation not found'));
+  if (!aggId) return checks;
+
+  console.log(chalk.gray(`[l4] ${scenario.id}: aggId=${aggId}, polling getEvaluation…`));
+  const result = await pollEvaluation(aggregator, aggId, {
+    pollIntervalMs: l4.pollIntervalMs, timeoutMs: timeoutMs || l4.timeoutMs,
+  }, (remainMs) => console.log(chalk.gray(`[l4]   waiting… ${Math.round(remainMs / 1000)}s left`)));
+
+  checks.push(A.assert('evaluation.fulfilled', result.status === 'fulfilled', `status=${result.status}`));
+  if (result.status !== 'fulfilled') return checks;
+
+  checks.push(...A.structuralScoreAssertions(result.scores, {
+    minOutcomes: scenario.minOutcomes || 2,
+    scoreSumTarget: cfg.tolerances.scoreSumTarget,
+    scoreSumSlack: cfg.tolerances.scoreSumSlack,
+  }));
+  if (opts.assertWinner && Number.isInteger(scenario.expectedWinnerIndex)) {
+    checks.push(A.winnerAssertion(result.scores, scenario.expectedWinnerIndex));
+  }
+  const { checks: jChecks, reports } = await justificationChecks(cfg, result.justificationCID, expect);
+  checks.push(...jChecks);
+  if (scenario.expectPdfInputs) checks.push(...pdfInputChecks(reports, scenario.expectPdfInputs));
+  console.log(chalk.gray(`[l4] ${scenario.id}: fulfilled in ${Math.round((Date.now() - start) / 1000)}s; ${reports.length} revealing arbiter(s)`));
+  for (const r of reports) {
+    const v = r.version;
+    console.log(chalk.gray(`[l4]   ${r.cid}: ${v ? `common=${v.verdiktaCommon || '?'} adapter=${v.adapter || '?'} aiNode=${v.aiNode || '?'} release=${releaseCommit(v.release) || '?'}` : 'justification fetch failed'}`));
+  }
+  return checks;
+}
+
+/**
+ * A text request nobody may commit to (scenario.expectNoCommit): its jury cannot be whole, and an
+ * arbiter does not answer for a jury it did not run (ai-node/src/utils/juryQuorum.ts). Arbiters
+ * that are down are silent too, so the control follows: a request the same arbiters must answer,
+ * held to the versions this run names. The watched round is left unfinalized, as a claim's is.
+ *
+ * @returns {Promise<Array>} the checks
+ */
+async function noCommitRound(ctx, scenario) {
+  const { aggregator, l4 } = ctx;
+  const watchMs = scenario.watchSeconds * 1000;
+  const sent = await sendClaimRequest(ctx, scenario, scenario);
+  const checks = [...sent.checks];
+  if (!sent.aggId) return checks;
+  console.log(chalk.gray(`[l4] ${scenario.id}: aggId=${sent.aggId}, watching ${scenario.watchSeconds}s for a commit, which must not come…`));
+  const watched = await watchRound(aggregator, sent.aggId, { pollIntervalMs: l4.pollIntervalMs, watchMs });
+  checks.push(...abstainChecks(watched, 'round'));
+  console.log(chalk.gray(`[l4] ${scenario.id}: left unfinalized. Once responseTimeoutSeconds has passed, anyone can reclaim the prepay, at a cost to the polled oracles' reputations: cast send ${l4.aggregatorAddress} 'finalizeEvaluationTimeout(bytes32)' ${sent.aggId}`));
+
+  const control = scenario.controlRequest;
+  const prefix = `control.${control.id}`;
+  try {
+    const seen = await textRound(ctx, control, { strictEstimate: true, timeoutMs: watchMs });
+    checks.push(...seen.map((check) => ({ ...check, name: `${prefix}.${check.name}` })));
+  } catch (err) {
+    checks.push(A.assert(`${prefix}.started`, false, err.message));
+  }
+  return checks;
+}
+
 function buildL4Config(cfg, scenarios, opts = {}) {
   const l4 = cfg.l4 || {};
   // --class-id, then L4_CLASS_ID, then config; the canary gate requests class 5555. A claim
@@ -360,7 +454,6 @@ async function runL4(cfg, selected, opts) {
     console.log(chalk.gray(`[l4] aggregator responseTimeoutSeconds=${timeout} (design §11: 900 once G2 has set it)`));
   }
 
-  const { maxOracleFee } = l4.fees;
   const claimContext = { cfg, provider, aggregator, l4, expect, opts, faultSwitch: l4.faultSwitch };
   const claimRounds = [];
   const claimDisputes = [];
@@ -381,56 +474,7 @@ async function runL4(cfg, selected, opts) {
       continue;
     }
     try {
-      const value = await aggregator.maxTotalFee(maxOracleFee);
-      const args = requestArgs(scenario, l4.fees, l4.classId);
-
-      // Estimate rather than trust config.l4.gasLimit: selection cost grows with
-      // the registry, and an out-of-gas request still pays for the whole limit.
-      let estimate = null;
-      try {
-        estimate = await aggregator.requestAIEvaluationWithApproval.estimateGas(...args, { value });
-      } catch (err) {
-        // A claim's request is not sent on a guess: a failed estimate here means selection
-        // would revert (no job in the class at this fee), and a reverted request still pays gas.
-        if (isCanaryOnly(scenario)) throw new Error(`gas estimation failed (${err.shortMessage || err.message}): the request was not sent`);
-        console.log(chalk.yellow(`[l4] ${scenario.id}: gas estimation failed (${err.shortMessage || err.message}); using configured gasLimit=${l4.gasLimit}`));
-      }
-      const gasLimit = gasLimitFor(estimate, l4.gasLimit);
-      console.log(chalk.gray(`[l4] ${scenario.id}: submitting ${args[0].length} CID(s) (value=${ethers.formatEther(value)} ETH, gasLimit=${gasLimit}${estimate === null ? '' : `, estimate=${estimate}`})…`));
-
-      const tx = await aggregator.requestAIEvaluationWithApproval(...args, { value, gasLimit });
-      const receipt = await tx.wait(1);
-      const aggId = parseAggId(aggregator, receipt);
-
-      const checks = [];
-      checks.push(A.assert('tx.mined', receipt.status === 1, `tx=${tx.hash}`));
-      checks.push(A.assert('event.RequestAIEvaluation', !!aggId, aggId ? `aggId=${aggId}` : 'RequestAIEvaluation not found'));
-
-      if (aggId) {
-        console.log(chalk.gray(`[l4] ${scenario.id}: aggId=${aggId}, polling getEvaluation…`));
-        const result = await pollEvaluation(aggregator, aggId, {
-          pollIntervalMs: l4.pollIntervalMs, timeoutMs: l4.timeoutMs,
-        }, (remainMs) => console.log(chalk.gray(`[l4]   waiting… ${Math.round(remainMs / 1000)}s left`)));
-
-        checks.push(A.assert('evaluation.fulfilled', result.status === 'fulfilled', `status=${result.status}`));
-        if (result.status === 'fulfilled') {
-          checks.push(...A.structuralScoreAssertions(result.scores, {
-            minOutcomes: scenario.minOutcomes || 2,
-            scoreSumTarget: cfg.tolerances.scoreSumTarget,
-            scoreSumSlack: cfg.tolerances.scoreSumSlack,
-          }));
-          if (opts.assertWinner && Number.isInteger(scenario.expectedWinnerIndex)) {
-            checks.push(A.winnerAssertion(result.scores, scenario.expectedWinnerIndex));
-          }
-          const { checks: jChecks, reports } = await justificationChecks(cfg, result.justificationCID, expect);
-          checks.push(...jChecks);
-          console.log(chalk.gray(`[l4] ${scenario.id}: fulfilled in ${Math.round((Date.now() - start) / 1000)}s; ${reports.length} revealing arbiter(s)`));
-          for (const r of reports) {
-            const v = r.version;
-            console.log(chalk.gray(`[l4]   ${r.cid}: ${v ? `common=${v.verdiktaCommon || '?'} adapter=${v.adapter || '?'} aiNode=${v.aiNode || '?'} release=${releaseCommit(v.release) || '?'}` : 'justification fetch failed'}`));
-          }
-        }
-      }
+      const checks = scenario.expectNoCommit ? await noCommitRound(claimContext, scenario) : await textRound(claimContext, scenario);
       reporter.addCase({ id: scenario.id, mode: 'l4', durationMs: Date.now() - start, checks });
     } catch (err) {
       reporter.addCase({ id: scenario.id, mode: 'l4', durationMs: Date.now() - start, error: err.message, checks: [] });

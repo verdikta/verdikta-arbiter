@@ -7,6 +7,7 @@
  */
 
 import { CallControlOptions, LLMProvider } from './llm-provider-interface';
+import { ProviderAttachment, partitionAttachments, withNotShownNote } from './provider-attachments';
 import { ChatOllama } from "@langchain/ollama";
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png']; // Most Ollama vision models support these formats
@@ -266,12 +267,19 @@ export class OllamaProvider implements LLMProvider {
   async generateResponseWithAttachments(
     prompt: string, 
     model: string, 
-    attachments: Array<{ type: string, content: string, mediaType: string }>,
+    attachments: ProviderAttachment[],
     options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
   ): Promise<string> {
-    const imageAttachments = attachments.filter(att => att.type === 'image');
+    // This request is a prompt and at most one image: it has no place for a text
+    // attachment or a file. Those used to be left out without a word (a PDF reaches
+    // this provider as its extracted text, so that too); now the prompt says so.
+    const { inline: imageAttachments, notShown } = partitionAttachments(attachments, false, false);
     if (imageAttachments.length > 1) {
       throw new Error(`[${this.providerName}] Model ${model} only supports a single image input`);
+    }
+    if (notShown.length > 0) {
+      console.warn(`[${this.providerName}] ${notShown.length} attachment(s) cannot be sent to ${model}; the prompt says so`);
+      prompt = withNotShownNote(prompt, notShown, `${this.providerName} ${model}`);
     }
 
     if (imageAttachments.length === 1) {
@@ -285,5 +293,15 @@ export class OllamaProvider implements LLMProvider {
 
   supportsAttachments(model: string): boolean {
     return this.models.some(m => m.name === model && m.supportsImages);
+  }
+
+  /**
+   * false: the request built above is a prompt and an image. The rank-and-justify
+   * route reads this to give the juror its images only and a prompt line that names
+   * what it is not shown (pdfRouting.ts, imagesOnly), instead of notes about text
+   * this provider would then leave out.
+   */
+  sendsTextAttachments(_model?: string): boolean {
+    return false;
   }
 }

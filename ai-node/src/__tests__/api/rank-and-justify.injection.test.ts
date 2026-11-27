@@ -132,15 +132,25 @@ describe('rank-and-justify against a submission that speaks as the requester', (
     const justifier = { generateResponse: jest.fn().mockResolvedValue('Summary.') };
     (LLMFactory.getProvider as jest.Mock).mockImplementation(async (provider: string) =>
       provider === 'Injected' ? injected : provider === 'JustifierProvider' ? justifier : honest);
-    const res: any = await post(body({
+    const jury = {
       models: [
         { provider: 'Injected', model: 'm1', weight: 1 },
         { provider: 'Anthropic', model: 'claude-sonnet-4-20250514', weight: 1 },
         { provider: 'Anthropic', model: 'claude-sonnet-4-20250514', weight: 1 },
       ],
-    }));
-    const data = await res.json();
-    expect(data.scores.map((s: any) => s.score)).toEqual([0, 1000000]);
-    expect(data.metadata.models_failed).toBe(1);
+    };
+    // Every juror must answer by default (utils/juryQuorum.ts): the dropped juror ends the request.
+    const refused: any = await post(body(jury));
+    expect(refused.status).toBe(400);
+    expect((await refused.json()).error).toMatch(/Insufficient successful models: 2\/3/);
+    // Under the operator's override (half the jury) the other two answer, without the injected scores.
+    process.env.MIN_SUCCESSFUL_MODELS_PERCENT = '0.5';
+    try {
+      const data = await (await post(body(jury))).json();
+      expect(data.scores.map((s: any) => s.score)).toEqual([0, 1000000]);
+      expect(data.metadata.models_failed).toBe(1);
+    } finally {
+      delete process.env.MIN_SUCCESSFUL_MODELS_PERCENT;
+    }
   });
 });

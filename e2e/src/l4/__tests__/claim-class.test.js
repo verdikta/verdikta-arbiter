@@ -36,6 +36,7 @@ describe('isCanaryOnly', () => {
     expect(isCanaryOnly(plain)).toBe(false);
     expect(isCanaryOnly({ id: 'x', cids: ['QmA'], addendum: 'price=42' })).toBe(false);
     expect(isCanaryOnly({ id: 'x', cids: ['QmA'] })).toBe(false);
+    expect(isCanaryOnly({ id: 'x', cids: ['QmA'], expectNoCommit: false })).toBe(false);
   });
 });
 
@@ -106,6 +107,16 @@ describe('the committed scenarios, through the same path the CLI takes', () => {
 
   it.each(ALL)('--scenario %s with no --class-id is refused', (id) => {
     expect(() => resolveRunClass({ env: '', config: CONFIG.l4.classId, scenarios: selected([id]) })).toThrow(new RegExp(`${id}.*5555`, 's'));
+  });
+
+  it('--scenario incomplete-jury, which expects no commit, is refused the same way, and needs its versions', () => {
+    const scenarios = loadScenarios(DEFAULT_SCENARIOS, ['incomplete-jury'], { allowManualOnly: true });
+    expect(scenarios.every(isCanaryOnly)).toBe(true);
+    expect(() => resolveRunClass({ env: '', config: CONFIG.l4.classId, scenarios })).toThrow(/"incomplete-jury" run only on the canary class 5555.*left unfinalized/s);
+    expect(resolveRunClass({ cli: '5555', config: CONFIG.l4.classId, scenarios })).toBe(5555);
+    expect(() => assertVersionsNamed(scenarios, {})).toThrow(/"incomplete-jury" are a release gate, and need --expect-common and --expect-release/);
+    expect(() => assertVersionsNamed(scenarios, { expectCommon: '1.9.0', expectRelease: 'abc1234' })).not.toThrow();
+    expect(() => assertCanaryChain(scenarios, 8453n)).toThrow(/run only on Base Sepolia/);
   });
 
   it('a full run has no claim scenario, so the default class stays for it', () => {

@@ -259,11 +259,12 @@ graph LR
 
 ### Multi-Model Deliberation
 
-The panel runs **in parallel** with per-model timeouts. `Promise.allSettled`
-lets deliberation continue when some models fail: failed models are excluded
-from score aggregation (but their notes are kept for the justification), and the
-request only fails if fewer than `MIN_SUCCESSFUL_MODELS_PERCENT` (default 50%) of
-models succeed. Successful decision vectors are combined with a weighted average
+The panel runs **in parallel** with per-model timeouts. Every juror must answer:
+if one fails, the request fails with HTTP 400 and the arbiter commits nothing
+(`ai-node/src/utils/juryQuorum.ts`). An operator can lower the share of jurors
+required with `MIN_SUCCESSFUL_MODELS_PERCENT` (default 1); failed models are then
+excluded from score aggregation and named in the justification's result record.
+Successful decision vectors are combined with a weighted average
 that sums to 1,000,000. A separate `JUSTIFIER_MODEL` then writes the final
 justification. See `ai-node/src/app/api/rank-and-justify/route.ts`.
 
@@ -274,8 +275,8 @@ for (let i = 0; i < iterations; i++) {
     models.map(m => withTimeout(processModelForIteration(m, prompt, attachments), MODEL_TIMEOUT_MS))
   );
   const successful = settled.filter(isFulfilledAndParsed);
-  if (successful.length < Math.ceil(models.length * MIN_SUCCESSFUL_MODELS_PERCENT)) {
-    throw new Error('Insufficient successful models…'); // → HTTP 400
+  if (successful.length < requiredJurors(models.length, minSuccessfulModelsPercent())) { // all, by default
+    throw new Error('Insufficient successful models…'); // → HTTP 400, no commit
   }
   aggregatedScore = computeAverageVectors(successful.map(s => s.vector), weights); // sums to 1,000,000
 }

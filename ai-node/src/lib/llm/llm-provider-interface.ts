@@ -1,3 +1,5 @@
+import type { ProviderAttachment } from './provider-attachments';
+
 /**
  * Controls a code-mode juror call passes to `generateResponse` (design §10.3,
  * §11). Text mode passes none of them, and a provider that is given none
@@ -49,11 +51,24 @@ export interface LLMProvider {
 
   generateResponseWithImage(prompt: string, model: string, base64Image: string): Promise<string>;
 
-  generateResponseWithAttachments(prompt: string, model: string, attachments: Array<{ type: string, content: string, mediaType: string }>, options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }): Promise<string>;
+  /**
+   * Attachments are images, text, and PDFs as files (provider-attachments.ts). A
+   * provider names in the prompt whatever its request cannot carry; it never
+   * leaves an attachment out silently.
+   */
+  generateResponseWithAttachments(prompt: string, model: string, attachments: ProviderAttachment[], options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }): Promise<string>;
 
   supportsImages(model: string): boolean;
 
   supportsAttachments(model: string): boolean;
+
+  /**
+   * Optional. false for a provider whose request has no place for a text
+   * attachment (Ollama: a prompt and images). The rank-and-justify route then
+   * gives the juror its images only and a prompt line naming what it is not
+   * shown (attachments/pdfRouting.ts, imagesOnly). Absent: text attachments are sent.
+   */
+  sendsTextAttachments?(model: string): boolean;
 
   initialize(): Promise<void>;
 }

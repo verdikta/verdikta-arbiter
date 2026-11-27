@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { POST } from '../../app/api/rank-and-justify/route';
 import { LLMFactory } from '../../lib/llm/llm-factory';
 import { generateJustification } from '../../app/api/rank-and-justify/route';
+import { withPartialJury } from '../../../test-support/jury-quorum';
 
 interface ScoreOutcome {
   outcome: string;
@@ -102,6 +103,16 @@ class MockRequest implements Request {
 
 // Replace the global Request with our mock
 global.Request = MockRequest as any;
+
+/**
+ * The justification is the arbiter's own record of the result, then the justifier's text
+ * (utils/resultRecord.ts; its exact lines are asserted in rank-and-justify.record.test.ts).
+ */
+function expectRecordThen(justification: string, justifierText: string) {
+  expect(justification.startsWith("RESULT (computed by the arbiter from the jurors' scores)\n- ")).toBe(true);
+  expect(justification).toContain('\nJURORS (');
+  expect(justification.endsWith(`\n\n${justifierText}`)).toBe(true);
+}
 
 describe('POST /api/rank-and-justify', () => {
   beforeEach(() => {
@@ -225,7 +236,7 @@ describe('POST /api/rank-and-justify', () => {
       ];
 
       expect(data.scores).toEqual(expectedScores);
-      expect(data.justification).toBe(mockJustifierResponse);
+      expectRecordThen(data.justification, mockJustifierResponse);
       // The justifier summarizes the jurors; it never opens links quoted in their answers.
       expect(mockJustifierProvider.generateResponse).toHaveBeenCalledWith(
         expect.any(String), expect.any(String), expect.objectContaining({ webAccess: false })
@@ -436,7 +447,8 @@ describe('POST /api/rank-and-justify', () => {
         headers: { 'Content-Type': 'application/json' },
       });
 
-      const response = await POST(request);
+      // A response reports a failed juror only where a partial jury is allowed (juryQuorum.ts).
+      const response = await withPartialJury(() => POST(request));
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -451,7 +463,7 @@ describe('POST /api/rank-and-justify', () => {
       expect(succeeded.status).toBe('success');
     });
 
-    test('should handle malformed response from one model and apply fallback', async () => {
+    test('a partial jury allowed: should handle malformed response from one model and apply fallback', async () => {
       // Mock responses for each model
       const mockOpenAIResponse = JSON.stringify({
         score: [700000, 300000],
@@ -514,11 +526,11 @@ describe('POST /api/rank-and-justify', () => {
         headers: { 'Content-Type': 'application/json' },
       });
 
-      const response = await POST(request);
+      const response = await withPartialJury(() => POST(request));
       expect(response).toBeDefined();
       const data = await response.json();
 
-      // Expect success despite one model failing format
+      // Expect success despite one model failing format: the operator allowed a partial jury
       expect(response.status).toBe(200);
       expect(data).toHaveProperty('scores');
       expect(data).toHaveProperty('justification');
@@ -551,7 +563,7 @@ describe('POST /api/rank-and-justify', () => {
         expect.any(String), // The specific justifier model name
         { webAccess: false } // Non-reasoning justifier: no reasoning options, and never web access
       );
-      expect(data.justification).toBe(mockJustifierResponse);
+      expectRecordThen(data.justification, mockJustifierResponse);
       // The evaluation, then one repair call that also gave no scores: no further retries.
       expect(mockAnthropicProvider.generateResponse).toHaveBeenCalledTimes(2);
       expect(data.model_results.find((r: any) => r.model === 'claude-3').status).toBe('parsing_error');
@@ -775,7 +787,7 @@ describe('POST /api/rank-and-justify', () => {
       ];
 
       expect(data.scores).toEqual(expectedScores);
-      expect(data.justification).toBe(mockJustifierResponse);
+      expectRecordThen(data.justification, mockJustifierResponse);
 
       // Verify total score sums to 1,000,000
       const totalScore = data.scores.reduce((sum: number, item: ScoreOutcome) => sum + item.score, 0);
@@ -981,7 +993,7 @@ describe('POST /api/rank-and-justify', () => {
       ];
 
       expect(data.scores).toEqual(expectedScores);
-      expect(data.justification).toBe('Final iteration justification');
+      expectRecordThen(data.justification, 'Final iteration justification');
 
       // Verify that the second iteration calls included previous responses in the prompt
       const secondIterationCalls = mockOpenAIProvider.generateResponse.mock.calls.slice(1);
@@ -1030,7 +1042,8 @@ describe('POST /api/rank-and-justify', () => {
         }
       });
 
-      const response = await POST(new Request('http://localhost/api/rank-and-justify', {
+      // xAI's reply cannot be read: reported beside the others only where a partial jury is allowed.
+      const response = await withPartialJury(() => POST(new Request('http://localhost/api/rank-and-justify', {
         method: 'POST',
         body: JSON.stringify({
           prompt: 'Open https://stockanalysis.com/stocks/msft/history/ and read the 10/20 close.',
@@ -1043,7 +1056,7 @@ describe('POST /api/rank-and-justify', () => {
           ],
         }),
         headers: { 'Content-Type': 'application/json' },
-      }));
+      })));
       const data = await response.json();
 
       expect(response.status).toBe(200);

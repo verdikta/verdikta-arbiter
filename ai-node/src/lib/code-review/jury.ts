@@ -11,6 +11,7 @@
  */
 
 import { LLMFactory } from '../llm/llm-factory';
+import { redactProviderText } from '../../utils/redactProviderText';
 import { parseRepairedScores, replyJustification } from '../../utils/repairModelResponse';
 import { buildCodeRepairPrompt } from './claim-prompt';
 import { CallAbortedError, JUSTIFIER_RESERVE_MS, raceAbort, timedController } from './deadline';
@@ -33,6 +34,7 @@ export interface JurorResult {
   model: string;
   status: JurorStatus;
   duration_ms: number;
+  /** Ours, or a provider's after redactProviderText: it goes into the error body. The whole message is in the log. */
   error_message?: string;
   http_status?: number;
   vector?: number[];
@@ -160,11 +162,15 @@ export async function runCodeJury(input: {
       // Every juror is required: one failure decides the request, so stop the others now.
       state.first = state.first ?? 'failed';
       abortAll();
+      // The provider's message goes whole to this log line only: it can quote the
+      // operator's key, a response body or a URL (utils/redactProviderText.ts).
+      const rawMessage: string = error?.message || String(error);
+      if (!(error instanceof JurorParseError)) console.error(`❌ CODE_JUROR_ERROR: ${juror.provider}:${juror.model} ${rawMessage}`);
       return {
         ...base,
         status: error instanceof JurorParseError ? 'parsing_error' : 'failed',
         duration_ms,
-        error_message: error?.message || String(error),
+        error_message: redactProviderText(rawMessage),
         http_status: httpStatusOf(error),
       };
     }
@@ -188,6 +194,7 @@ export function justifierModel(): { provider: string; model: string } | null {
 export type JustifierOutcome =
   | { kind: 'ok'; text: string }
   | { kind: 'timeout' }
+  /** `message` is ours, or the provider's after redactProviderText (the whole one is logged). */
   | { kind: 'failed'; message: string; httpStatus?: number };
 
 /**
@@ -215,7 +222,9 @@ export async function runCodeJustifier(prompt: string, budgetMs: number, holds: 
     return { kind: 'ok', text };
   } catch (error: any) {
     if (controller.signal.aborted) return { kind: 'timeout' };
-    return { kind: 'failed', message: error?.message || String(error), httpStatus: httpStatusOf(error) };
+    const rawMessage: string = error?.message || String(error);
+    console.error(`❌ CODE_JUSTIFIER_ERROR: ${target.provider}:${target.model} ${rawMessage}`);
+    return { kind: 'failed', message: redactProviderText(rawMessage), httpStatus: httpStatusOf(error) };
   } finally {
     clear();
   }

@@ -25,9 +25,14 @@ const MACHINE_LINE = /verdikta-(?:disclosure|dispute)/i;
  * start doing. The EA's disclosure gate settles that one INVALID, with no runner and no model.) Nothing on an arbiter stops a
  * claim on another class (the bridge does not tell the EA the class), so a claim on class 128
  * would spend real money on real arbiters.
+ *
+ * So must a scenario that expects no commit (scenario-loader.js, validateNoCommit): it is a
+ * statement about a release, which only the arbiters we upgrade can be held to, and it leaves a
+ * round unfinalized, which is not ours to do to another operator's arbiters.
  */
 function isCanaryOnly(scenario) {
   if (scenario.suite === 'l4-claim') return true;
+  if (scenario.expectNoCommit === true) return true;
   // In the addendum, or written into a CID field in the adapter's `cids:addendum` form.
   return [scenario.addendum, scenario.cid, ...(Array.isArray(scenario.cids) ? scenario.cids : [])]
     .some((text) => typeof text === 'string' && MACHINE_LINE.test(text));
@@ -80,7 +85,7 @@ function resolveRunClass({ cli, env, config, scenarios = [] } = {}) {
   const { classId, source } = pickClass({ cli, env, config });
   if (scenarios.some(isCanaryOnly) && classId !== CANARY_CLASS_ID) {
     throw new Error(`Refused: ${named(scenarios)} run only on the canary class ${CANARY_CLASS_ID}, and this run resolved to class ${classId} (from ${source}). `
-      + `A claim on another class would spend real money on real arbiters. Name the class: --class-id ${CANARY_CLASS_ID}.`);
+      + `A claim on another class would spend real money on real arbiters, and a round that must get no commit is left unfinalized. Name the class: --class-id ${CANARY_CLASS_ID}.`);
   }
   return classId;
 }
@@ -173,6 +178,45 @@ function describe(report) {
   if (!report.version) return `${shortCid(report.cid)}: fetch failed`;
   const v = report.version;
   return `${shortCid(report.cid)}: common=${v.verdiktaCommon || '?'} adapter=${v.adapter || '?'} release=${releaseCommit(v.release) || '?'}`;
+}
+
+/**
+ * How each revealing arbiter's jurors were given the request's PDFs, for a scenario
+ * that says how they must be (`expectPdfInputs: "native"`, the pdf-canary scenario).
+ *
+ * The AI Node reports it per juror as `model_results[].pdf_inputs` (one entry per
+ * PDF, `form` native / text / not_shown), and the External Adapter copies
+ * `model_results` into the justification. Every juror of every revealing arbiter
+ * must report every PDF in the expected form: an arbiter whose AI Node predates the
+ * field, routes a class through OpenRouter, or had a provider turn the file down
+ * reports something else, and the detail says which.
+ *
+ * @param {Array<{cid: string, json: object|null}>} reports - one per justification CID
+ * @param {string} expectedForm - 'native'
+ * @returns {Array<{ name: string, ok: boolean, detail: string }>}
+ */
+function pdfInputChecks(reports, expectedForm) {
+  const lines = [];
+  let ok = reports.length > 0;
+  for (const report of reports) {
+    const results = report.json && Array.isArray(report.json.model_results) ? report.json.model_results : null;
+    if (!results || results.length === 0) {
+      ok = false;
+      lines.push(`${shortCid(report.cid)}: ${report.json ? 'no model_results' : 'fetch failed'}`);
+      continue;
+    }
+    const jurors = results.map((result) => {
+      const inputs = Array.isArray(result.pdf_inputs) ? result.pdf_inputs : [];
+      if (inputs.length === 0) {
+        ok = false;
+        return `${result.provider}/${result.model}: no pdf_inputs`;
+      }
+      if (inputs.some((input) => input.form !== expectedForm)) ok = false;
+      return `${result.provider}/${result.model}: ${inputs.map((input) => `${input.form}${input.reason ? ` (${input.reason})` : ''}`).join(', ')}`;
+    });
+    lines.push(`${shortCid(report.cid)}: ${jurors.join('; ')}`);
+  }
+  return [A.assert(`pdfInputs.all===${expectedForm}`, ok, lines.join(' | ') || 'no justification CIDs')];
 }
 
 /**
@@ -276,4 +320,5 @@ module.exports = {
   releaseCommit,
   commitMatches,
   versionChecks,
+  pdfInputChecks,
 };

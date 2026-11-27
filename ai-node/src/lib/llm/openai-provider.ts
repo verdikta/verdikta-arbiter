@@ -16,6 +16,8 @@ import { WebAccessOption, openAIModelSupportsWebSearch, shouldUseWebTools, webMa
 import { WebRetrieval, summarizeOpenAIWebSearch, webToolsOff } from './web-retrieval';
 import { jurorTransportFor } from './juror-transport';
 import { isGpt5FamilyModel } from './openai-model-family';
+import { openAIModelReadsPdf } from './pdf-support';
+import { ProviderAttachment, partitionAttachments, pdfFileName, withNotShownNote } from './provider-attachments';
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB in bytes
@@ -262,21 +264,23 @@ export class OpenAIProvider implements LLMProvider {
   async generateResponseWithAttachments(
     prompt: string, 
     model: string, 
-    attachments: Array<{ type: string, content: string, mediaType: string }>,
+    attachments: ProviderAttachment[],
     options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & WebAccessOption
   ): Promise<string> {
-    // Check if this model supports native PDF processing (GPT-5 and later included)
-    const supportsNativePDF = isGpt5FamilyModel(model) || ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini'].some(supportedModel => 
-      model.toLowerCase().includes(supportedModel.toLowerCase())
-    );
-
-    // Separate PDFs from other attachments
-    const pdfAttachments = attachments.filter(att => att.mediaType === 'application/pdf');
-    const otherAttachments = attachments.filter(att => att.mediaType !== 'application/pdf');
+    // PDFs go in as file parts for every model that reads them (pdf-support.ts).
+    // Anything this request cannot carry is named in the prompt, never left out silently
+    // and never sent as if its base64 were text: a PDF for a model that does not read
+    // them, or a document that was not turned into text.
+    const { pdfs: pdfAttachments, inline: otherAttachments, notShown } =
+      partitionAttachments(attachments, openAIModelReadsPdf(model));
+    if (notShown.length > 0) {
+      console.warn(`[${this.providerName}] ${notShown.length} attachment(s) cannot be sent to ${model}; the prompt says so`);
+      prompt = withNotShownNote(prompt, notShown, `${this.providerName} ${model}`);
+    }
 
     // Links in the request are opened by OpenAI's web_search tool; same inputs as below.
     if (shouldUseWebTools(prompt, attachments) && openAIModelSupportsWebSearch(model)) {
-      const input = this.responsesInputContent(model, withWebAccessNote(prompt), supportsNativePDF ? pdfAttachments : [], otherAttachments);
+      const input = this.responsesInputContent(model, withWebAccessNote(prompt), pdfAttachments, otherAttachments);
       const answer = await this.tryWebSearch(model, input, options);
       if (answer !== null) return answer;
     }
@@ -285,7 +289,7 @@ export class OpenAIProvider implements LLMProvider {
     const isGpt5Model = isGpt5FamilyModel(model);
 
     // The native PDF path only when a PDF is actually attached
-    if (supportsNativePDF && pdfAttachments.length > 0) {
+    if (pdfAttachments.length > 0) {
       console.log(`[${this.providerName}] Using native PDF support for ${model} (${pdfAttachments.length} PDF(s))`);
       return this.generateResponseWithNativePDFSupport(prompt, model, pdfAttachments, otherAttachments, options);
     }
@@ -367,7 +371,7 @@ export class OpenAIProvider implements LLMProvider {
   private async generateResponseWithNativeAttachments(
     prompt: string,
     model: string,
-    attachments: Array<{ type: string, content: string, mediaType: string }>,
+    attachments: ProviderAttachment[],
     options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
   ): Promise<string> {
     const messageContent: any[] = [
@@ -386,8 +390,8 @@ export class OpenAIProvider implements LLMProvider {
   private async generateResponseWithNativePDFSupport(
     prompt: string, 
     model: string, 
-    pdfAttachments: Array<{ type: string, content: string, mediaType: string }>,
-    otherAttachments: Array<{ type: string, content: string, mediaType: string }>,
+    pdfAttachments: ProviderAttachment[],
+    otherAttachments: ProviderAttachment[],
     options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
   ): Promise<string> {
     // Build message content with native PDF support
@@ -396,8 +400,9 @@ export class OpenAIProvider implements LLMProvider {
     ];
 
     // Add PDF attachments using base64 method (as per OpenAI docs)
-    for (const pdfAttachment of pdfAttachments) {
-      // Validate PDF size (OpenAI limit: 32MB, 100 pages)
+    pdfAttachments.forEach((pdfAttachment, position) => {
+      // The route keeps a request's PDFs within the limits (attachments/pdfRouting.ts);
+      // this catches a caller that did not.
       const pdfSizeBytes = (pdfAttachment.content.length * 3) / 4; // Approximate base64 to bytes conversion
       if (pdfSizeBytes > 32 * 1024 * 1024) {
         throw new Error(`PDF file size (${Math.round(pdfSizeBytes / 1024 / 1024)}MB) exceeds OpenAI's 32MB limit`);
@@ -408,10 +413,10 @@ export class OpenAIProvider implements LLMProvider {
         type: "file",
         file: {
           file_data: `data:application/pdf;base64,${pdfAttachment.content}`,
-          filename: "document.pdf"
+          filename: pdfFileName(pdfAttachment.name, position)
         }
       });
-    }
+    });
 
     // Add other attachments (images, etc.)
     messageContent.push(...this.nativeAttachmentBlocks(model, otherAttachments));
@@ -427,7 +432,7 @@ export class OpenAIProvider implements LLMProvider {
    */
   private nativeAttachmentBlocks(
     model: string,
-    attachments: Array<{ type: string, content: string, mediaType: string }>
+    attachments: ProviderAttachment[]
   ): any[] {
     return attachments.map(attachment => {
       if (attachment.type === "image") {
@@ -518,21 +523,21 @@ export class OpenAIProvider implements LLMProvider {
   private responsesInputContent(
     model: string,
     prompt: string,
-    pdfAttachments: Array<{ type: string, content: string, mediaType: string }>,
-    otherAttachments: Array<{ type: string, content: string, mediaType: string }>
+    pdfAttachments: ProviderAttachment[],
+    otherAttachments: ProviderAttachment[]
   ): any[] {
     const content: any[] = [{ type: 'input_text', text: prompt }];
-    for (const pdfAttachment of pdfAttachments) {
+    pdfAttachments.forEach((pdfAttachment, position) => {
       const pdfSizeBytes = (pdfAttachment.content.length * 3) / 4;
       if (pdfSizeBytes > 32 * 1024 * 1024) {
         throw new Error(`PDF file size (${Math.round(pdfSizeBytes / 1024 / 1024)}MB) exceeds OpenAI's 32MB limit`);
       }
       content.push({
         type: 'input_file',
-        filename: 'document.pdf',
+        filename: pdfFileName(pdfAttachment.name, position),
         file_data: `data:application/pdf;base64,${pdfAttachment.content}`
       });
-    }
+    });
     for (const attachment of otherAttachments) {
       if (attachment.type === 'image') {
         if (!SUPPORTED_IMAGE_FORMATS.includes(attachment.mediaType)) {

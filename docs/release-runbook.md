@@ -173,6 +173,46 @@ no `drawJury`), so this canary gate cannot run against v2 until it is ported.
    The canary conditions of design §11 (G2) take more than the flags: see
    [The canary conditions](#the-canary-conditions-11) below.
 
+   A release that changes what the AI Node sends a provider also runs the manual
+   scenario for what it changed, by name, on class 5555
+   ([`e2e/README.md`](../e2e/README.md), "Scenarios"): `bounty-171-replay` for
+   image handling, `link-canary` for web tools, and `pdf-canary` for attachments,
+   the per-juror PDF routing or a provider's request:
+
+   ```bash
+   gh workflow run e2e.yml --ref <branch> -f run_l4=true -f class_id=5555 \
+     -f scenario=pdf-canary -f expect_release=<release commit>
+   ```
+
+   `pdf-canary` sends a PDF whose answer exists only as a picture. It is green
+   when every juror of every revealing arbiter reports the PDF as `native`
+   (`pdfInputs.all===native`); then read the scores (VIOLET, index 3) and the
+   justification (it quotes the picture's canary code), and look for
+   `model_timeout` warnings: a PDF sent as a file is more input than its text
+   was, and `MODEL_TIMEOUT_MS` is still 120 s. Its archive has to be pinned once
+   before the first run (`e2e/README.md`). The canaries need their own OpenAI
+   and Anthropic keys for it: a class routed through OpenRouter is sent the
+   PDF's text, and the scenario reports that as a failure. Local tests prove the
+   requests the AI Node builds, with the real client libraries against a stub;
+   only this run proves the providers accept them.
+
+   A release that changes the quorum rule (`ai-node/src/utils/juryQuorum.ts`), or
+   what a failed juror costs a request, runs `incomplete-jury`:
+
+   ```bash
+   gh workflow run e2e.yml --ref <branch> -f run_l4=true -f class_id=5555 \
+     -f scenario=incomplete-jury \
+     -f expect_common=<@verdikta/common version> -f expect_release=<release commit>
+   ```
+
+   One of that request's two jurors is a model its provider has retired, so its
+   jury can never be whole. It is green when nobody commits for 240 s
+   (`round.noCommit`, `round.noVerdict`) and the control that follows,
+   `canonical-vuln`, settles with every revealing arbiter on the release named:
+   arbiters that are down commit nothing either. The watched round is left
+   unfinalized; closing it costs the polled canaries reputation, which is their
+   owner's call.
+
 4. **Gate.** Green means: the request was fulfilled, every revealing arbiter's
    justification reports the expected `verdiktaCommon` and `release`, and the
    justification is fetchable. `cd e2e && npm run audit-oracles -- <aggId>`

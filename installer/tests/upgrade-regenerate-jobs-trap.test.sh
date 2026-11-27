@@ -227,7 +227,9 @@ cp "$TARGET_NODE/basicJobSpec.changed" "$TARGET_NODE/basicJobSpec"; rm -f "$TARG
 
 contracts
 out=$(regen_run)
-hasnt "regen: no deregistration" "$out" "STUB-unregister"
+# The file says the node is not registered, with an aggregator recorded: the exit check runs first
+# (the keeper decides; upgrade-regenerate-jobs-registry.test.sh covers what it asks for).
+has   "regen: exit check first" "$out" "STUB-unregister"
 has   "regen: configures"   "$out" "STUB-CONFIGURE"
 hasnt "regen: no registration (the operator registers the new ids)" "$out" "STUB-register"
 has   "regen: says to register" "$out" "register-oracle.sh when you are ready"

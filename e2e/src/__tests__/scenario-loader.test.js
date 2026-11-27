@@ -118,6 +118,62 @@ describe('loadScenarios — manualOnly', () => {
   });
 });
 
+describe('loadScenarios: a scenario that expects no commit', () => {
+  const silent = { id: 'silent', cid: 'QmSilent', manualOnly: true, modes: ['commit-reveal'], minOutcomes: 2, expectNoCommit: true, watchSeconds: 240, control: 'single' };
+  const load = (scenarios, ids = ['silent']) => loadScenarios(scenariosFile(scenarios), ids, { allowManualOnly: true });
+
+  it('carries its control as a request: the CIDs, addendum and outcome count of the scenario it names', () => {
+    const [s] = load([single, silent]);
+    expect(s).toMatchObject({ id: 'silent', cids: ['QmSilent'], expectNoCommit: true, watchSeconds: 240 });
+    expect(s.controlRequest).toEqual({ id: 'single', cids: ['QmSingle'], addendum: '' });
+    const [withAddendum] = load([{ ...multi, addendum: 'price=42', minOutcomes: 3 }, { ...silent, control: 'multi' }]);
+    expect(withAddendum.controlRequest).toEqual({ id: 'multi', cids: ['QmPackage', 'QmArchive'], addendum: 'price=42', minOutcomes: 3 });
+  });
+
+  it('the control need not be selected, and may be manual-only itself', () => {
+    const [s] = load([single, paid, { ...silent, control: 'paid' }]);
+    expect(s.controlRequest.cids).toEqual(['QmPaidPackage', 'QmPaidArchive']);
+  });
+
+  it('is never in a full run: it leaves a round unfinalized', () => {
+    expect(loadScenarios(scenariosFile([single, silent])).map((s) => s.id)).toEqual(['single']);
+    expect(() => load([single, { ...silent, manualOnly: undefined }])).toThrow(/"silent" expects no commit: it leaves a round unfinalized, so it is "manualOnly"/);
+    expect(() => load([single, { ...silent, manualOnly: false }])).toThrow(/so it is "manualOnly"/);
+  });
+
+  it.each([
+    ['no watchSeconds', { watchSeconds: undefined }, /"watchSeconds" says how long to watch for one/],
+    ['watchSeconds 0', { watchSeconds: 0 }, /"watchSeconds" says how long to watch for one/],
+    ['watchSeconds 1.5', { watchSeconds: 1.5 }, /"watchSeconds" says how long to watch for one/],
+    ['no control', { control: undefined }, /"control" names the scenario the same arbiters must answer after it/],
+    ['a blank control', { control: ' ' }, /"control" names the scenario/],
+    ['expectNoCommit false', { expectNoCommit: false }, /"expectNoCommit" can only be true/],
+    ['a winner', { expectedWinnerIndex: 0 }, /there is no result for "expectedWinnerIndex" to hold/],
+    ['PDF inputs', { expectPdfInputs: 'native' }, /there is no result for "expectPdfInputs" to hold/],
+  ])('%s is refused', (_name, over, message) => {
+    expect(() => load([single, { ...silent, ...over }])).toThrow(message);
+  });
+
+  it.each([
+    ['one this file does not have', 'nobody', [], /its control "nobody" is not a scenario of this file/],
+    ['itself', 'silent', [], /its control "silent" is not a text scenario that settles/],
+    ['another that expects no commit', 'silent2', [{ id: 'silent2', cid: 'QmS2', manualOnly: true, expectNoCommit: true, watchSeconds: 1, control: 'single' }], /is not a text scenario that settles/],
+    ['one whose archive is not pinned', 'unpinned', [{ id: 'unpinned', cidFile: 'nowhere/unpinned.cid' }], /its control "unpinned" has no resolvable CID \(cidFile "nowhere\/unpinned.cid" not found: pin the archive first\)/],
+  ])('a control that is %s is refused', (_name, control, more, message) => {
+    expect(() => load([single, ...more, { ...silent, control }])).toThrow(message);
+  });
+
+  it('a claim scenario is not a control', () => {
+    const claim = { id: 'c', suite: 'claim', claim: 'valid', modes: ['0'] };
+    expect(() => load([single, claim, { ...silent, control: 'c' }])).toThrow(/its control "c" is not a text scenario that settles/);
+  });
+
+  it.each(['watchSeconds', 'control'])('%s on a scenario that expects a result is refused', (field) => {
+    const value = field === 'watchSeconds' ? 60 : 'single';
+    expect(() => loadScenarios(scenariosFile([single, { ...multi, [field]: value }]))).toThrow(new RegExp(`"multi": "${field}" is for a scenario that expects no commit`));
+  });
+});
+
 describe('committed scenarios.json', () => {
   const BOUNTY_171 = ['QmR8nMcL3UgKQZ93YTjXyaTSPdwHhf36LVgce635bA5Eb9', 'QmfGZLLN7YVwT6b9RKjxVPinb1c1zozu6w8xuxeTwFxX1B'];
 
@@ -153,7 +209,7 @@ describe('the default set: what a run that names no scenario holds (node A27)', 
     const raw = committed();
     const notManual = raw.filter((s) => s.suite === undefined && s.manualOnly !== true).map((s) => s.id);
     const manual = raw.filter((s) => s.manualOnly === true).map((s) => s.id);
-    expect(manual).toEqual(expect.arrayContaining(['frontend-default', 'bounty-171-replay', 'link-canary']));
+    expect(manual).toEqual(expect.arrayContaining(['incomplete-jury', 'bounty-171-replay', 'link-canary']));
     for (const selection of [l4Default(), l2Default()]) {
       const ids = selection.map((s) => s.id);
       expect(ids).toEqual(notManual);
@@ -175,16 +231,22 @@ describe('the default set: what a run that names no scenario holds (node A27)', 
     }
   });
 
-  it('frontend-default, the example-frontend\'s package, is manual-only and says why; L4 still runs it by name, L2 refuses it', () => {
-    const entry = committed().find((s) => s.id === 'frontend-default');
+  it('incomplete-jury, the example-frontend\'s package, is manual-only and says why; L4 still runs it by name, L2 refuses it', () => {
+    expect(committed().find((s) => s.id === 'frontend-default')).toBeUndefined();
+    const entry = committed().find((s) => s.id === 'incomplete-jury');
     expect(entry.manualOnly).toBe(true);
     expect(entry.description).toMatch(/not project-owned/);
     expect(entry.description).toMatch(/claude-3-5-sonnet-20241022/);
     expect(entry.description).toMatch(/retired/);
     expect(entry.description).toMatch(/canonical-vuln/);
-    const [s] = loadScenarios(DEFAULT_SCENARIOS, ['frontend-default'], { allowManualOnly: true });
+    // Its jury can never be whole, so nobody may commit; the project's own archive is its control.
+    expect(entry).toMatchObject({ expectNoCommit: true, watchSeconds: 240, control: 'canonical-vuln', modes: ['commit-reveal'] });
+    expect(entry.expectedWinnerIndex).toBeUndefined();
+    const [s] = loadScenarios(DEFAULT_SCENARIOS, ['incomplete-jury'], { allowManualOnly: true });
     expect(s.cids).toEqual([FRONTEND_DEFAULT]);
-    expect(() => loadScenarios(DEFAULT_SCENARIOS, ['frontend-default'])).toThrow(/"frontend-default" are manualOnly: run them with L4/);
+    const canonical = fs.readFileSync(path.join(E2E, 'archives', 'contract-vuln.cid'), 'utf8').trim();
+    expect(s.controlRequest).toEqual({ id: 'canonical-vuln', cids: [canonical], addendum: '', minOutcomes: 2 });
+    expect(() => loadScenarios(DEFAULT_SCENARIOS, ['incomplete-jury'])).toThrow(/"incomplete-jury" are manualOnly: run them with L4/);
   });
 
   it('smoke\'s own default is the project\'s archive, which L2 runs by name: a manual-only one would refuse there', () => {

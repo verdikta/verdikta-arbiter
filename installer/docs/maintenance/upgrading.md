@@ -306,6 +306,45 @@ their commit and are removed every 15 minutes. The upgrade does not touch the di
 `COMMIT_STORE_DIR` in `external-adapter/.env` to keep it elsewhere (move the files with it while
 the adapter is stopped). Before this release the store was in memory only (`USE_FILE = false`).
 
+### Stake and replaced jobs
+
+Both paths above give every job a new ID, and with the v2 dispatcher each registered job ID is an
+arbiter key with its own stake. A node that `installer/.contracts` records as registered is
+refused, as above. A node whose file records an aggregator but says it is not registered is
+checked first: the upgrade asks the dispatcher for **every job ID it holds for your operator
+contract** (from its `ArbiterRegistered` events), not only the ones written in
+`installer/.contracts`, requests the exit of any that is still registered, and then checks that
+none is left selectable. If that fails, or a job ID is still selectable afterwards, the jobs are
+**not** replaced: the node keeps its jobs, the upgrade finishes, and one of its last lines starts
+with `RECONFIGURE FAILED:` (the count change) or `JOB REGENERATION FAILED:` (the template path),
+exit code 3. Run the same upgrade again once the cause is fixed. An exit requested this way
+returns its stake only after the unbonding period (2 days by default): run
+`unregister-oracle.sh --all-registered` again then to complete it.
+
+On the v1 dispatcher (November 2026) only the job IDs in `installer/.contracts` were deregistered,
+and "not registered" for all of them counted as success: a node whose file no longer named its
+registered job was reconfigured anyway, and the old job ID stayed on the dispatcher with its stake
+and no node behind it. On v2 such a job ID would also still be drawn into juries. To find and exit
+every job ID of the operator contract:
+
+```bash
+~/verdikta-arbiter-node/unregister-oracle.sh --all-registered
+```
+
+That exits every job ID of the operator contract, including the ones the node runs; register the
+node's jobs again afterwards with `register-oracle.sh`. To exit one job ID and leave the rest
+registered, call the script behind it with that ID only (aggregator address: `docs/deployments.md`):
+
+```bash
+cd ~/verdikta-arbiter-node/arbiter-operator
+HARDHAT_NETWORK=base_mainnet node scripts/unregister-oracle-cl.js \
+  --aggregator <aggregator> --oracle <your operator contract> --jobids "<the 32-character job id>"
+```
+
+Run without `--all-registered`, both name any other job ID the dispatcher holds for the operator
+contract and leave it alone. When the RPC limits the block range of a log query, add
+`--from-block <the keeper's deployment block>` to the second command.
+
 ## Chainlink config regeneration
 
 Every setting checked in to `chainlink-node/config_template.toml` is meant to
@@ -367,6 +406,39 @@ Outside an upgrade, the same tool (installed in the install root):
 up on the new file, puts the backup back and starts it again. The doctor reports
 `cfg.chainlink_template` when template settings are not yet on the node.
 
+### The template the installed tools compare with
+
+The installed tool, the doctor's `cfg.chainlink_template` (it runs that tool) and
+the installed `update-rpc-endpoints.sh` (it writes `config.toml` from a template)
+all read the install's own copy,
+`<install-dir>/chainlink-node/config_template.toml`. Every upgrade replaces that
+copy with the checked-in one.
+
+Upgrades before late November 2026 did not: they put the install's old copy
+back, so a node last upgraded before then still compares with the template of
+its first installation. There the installed `--check` and the doctor can be wrong
+both ways. They can list a change that would undo a newer setting (on the testnet
+canaries: `[EVM.NodePool] SyncThreshold: 100 -> 10`, with `FinalityDepth` shown as
+"this node's own"), or report that nothing is missing when settings are. To tell
+which copy a node has:
+
+```bash
+cmp <checkout>/chainlink-node/config_template.toml ~/verdikta-arbiter-node/chainlink-node/config_template.toml
+```
+
+If they differ, until the node's next upgrade:
+
+- do not run the installed `regenerate-chainlink-config.sh --apply`, and do not
+  act on the doctor's `cfg.chainlink_template` line;
+- do not run the installed `update-rpc-endpoints.sh`: it would write `config.toml`
+  from the old template and drop every setting added since. (With a template from
+  before February 2026 it stops with "config_template.toml not found" instead.)
+  Change the RPCs through the upgrade, which asks;
+- read the node with the checkout's script, which uses the checked-in template:
+  `installer/util/regenerate-chainlink-config.sh --check --target-dir ~/verdikta-arbiter-node`.
+
+The next upgrade repairs the copy; nothing else is needed.
+
 **Verdikta agents** show the owner this list before they upgrade a node: they
 run `installer/util/regenerate-chainlink-config.sh --check --target-dir <install>`
 from the checkout they upgrade from, and answer
@@ -413,6 +485,34 @@ During upgrade, the script:
   (`installer/util/common-pin.js`)
 - can auto-integrate ClassID model pool updates into AI Node config
 - can check/download missing Ollama models (optional)
+
+## A request with a failed juror gets no answer
+
+Since 2026-11 the AI Node answers a request only when every model of its jury
+answered. If one juror times out, gives a reply that cannot be read, or fails at
+its provider (a rejected API key, an account at its usage limit, a model the
+provider no longer has), the request fails, the External Adapter commits
+nothing, and the Chainlink run is errored with
+`Insufficient successful models: 1/2 (minimum required: 2)`. Before, the node
+committed the scores of the jurors that did answer as the jury's: on a two-model
+jury, one model's verdict.
+
+For an operator:
+
+- **A provider key that is rejected or exhausted now costs every request whose
+  jury names that provider**, where it used to be answered by half a jury. Not
+  committing is not neutral: a round that times out applies the aggregator's
+  timeliness penalty to every polled oracle that did not commit
+  (`docs/development/stake-attestation-design.md`, section 12). Fix the key: the
+  doctor's `ai.provider_auth` and the watchdog's alert name the provider.
+- **An errored run with that message is not a fault of the node** when the
+  cause is the request (its jury names a model that no longer exists) or a
+  single slow answer.
+- **`MIN_SUCCESSFUL_MODELS_PERCENT`** in `ai-node/.env.local` is the override:
+  `0.5` restores the earlier rule for this node (no rebuild; restart the AI
+  Node). An answer from part of a jury can differ from the answers of arbiters
+  that ran all of it. No installer step sets it. Reference:
+  `ai-node/API_RESPONSE_SPECIFICATION.md`, "Configuration".
 
 ## AI Node production build
 

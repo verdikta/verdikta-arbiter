@@ -1436,8 +1436,63 @@ regenerate_job_specs() {
         fi
     fi
 
-    # Regenerate job specifications (requires Chainlink node to be running)
-    echo -e "${BLUE}Regenerating job specifications...${NC}"
+    # Step 1: the keeper, not installer/.contracts, says what is registered (#190; a job the
+    # file no longer named was left registered on the v1 keeper on Base mainnet, 2026-11-11).
+    # A registered node was refused above; when an aggregator is recorded but the file says
+    # the node is not registered, every job id the keeper still holds for this operator is
+    # exited first (VA_DEREGISTER_ALL_REGISTERED=y: requestExit, or completeExit when due),
+    # and the script fails unless none is left selectable, so a new id cannot leave an old
+    # key drawable with no node behind it. A failure stops before any job changes. This step
+    # runs before the upgrade refreshes the install's scripts, so the copies this checkout
+    # ships are put in place first.
+    local aggregator_addr="${AGGREGATOR_ADDRESS:-}"
+    if [ -n "$aggregator_addr" ]; then
+        echo -e "${BLUE}Step 1: Checking the dispatcher for job ids of this operator that are still registered...${NC}"
+        if [ -f "$UTIL_DIR/unregister-oracle.sh" ] && [ -d "$TARGET_DIR/arbiter-operator/scripts" ] \
+           && [ -f "$REPO_ROOT/arbiter-operator/scripts/lib/registry.js" ]; then
+            if ! { cp "$UTIL_DIR/unregister-oracle.sh" "$TARGET_DIR/unregister-oracle.sh" \
+                   && chmod +x "$TARGET_DIR/unregister-oracle.sh" \
+                   && mkdir -p "$TARGET_DIR/arbiter-operator/scripts/lib" \
+                   && cp "$REPO_ROOT/arbiter-operator/scripts/unregister-oracle-cl.js" "$TARGET_DIR/arbiter-operator/scripts/unregister-oracle-cl.js" \
+                   && cp "$REPO_ROOT/arbiter-operator/scripts/lib/"*.js "$TARGET_DIR/arbiter-operator/scripts/lib/"; }; then
+                echo -e "${RED}Could not put this release's deregistration scripts in $TARGET_DIR. The jobs and the stake on them are unchanged.${NC}"
+                JOB_REGEN_FAILED="this release's deregistration scripts could not be copied into $TARGET_DIR; the jobs and the stake on them are unchanged"
+                return 1
+            fi
+            if [ -f "$INSTALLER_DIR/lib/prompts.sh" ]; then
+                if ! { mkdir -p "$TARGET_DIR/installer/lib" \
+                       && cp "$INSTALLER_DIR/lib/prompts.sh" "$TARGET_DIR/installer/lib/prompts.sh"; }; then
+                    echo -e "${RED}Could not put this release's prompts.sh in $TARGET_DIR/installer/lib. The jobs and the stake on them are unchanged.${NC}"
+                    JOB_REGEN_FAILED="this release's installer/lib/prompts.sh could not be copied into $TARGET_DIR; the jobs and the stake on them are unchanged"
+                    return 1
+                fi
+            fi
+        fi
+        if [ -f "$TARGET_DIR/unregister-oracle.sh" ]; then
+            cd "$TARGET_DIR" || return 1
+            # Use the existing unregister script non-interactively
+            local unregister_rc=0
+            if unattended_mode; then
+                VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$aggregator_addr" bash unregister-oracle.sh --unattended || unregister_rc=$?
+            else
+                VA_DEREGISTER_ALL_REGISTERED=y bash unregister-oracle.sh <<< "$(printf 'y\n%s\ny' "$aggregator_addr")" || unregister_rc=$?
+            fi
+            if [ "$unregister_rc" -eq 0 ]; then
+                echo -e "${GREEN}The dispatcher holds no selectable job id for this operator${NC}"
+            else
+                echo -e "${RED}The exit check failed (exit $unregister_rc). Regenerating the jobs now could leave a registered key with no node behind it: the jobs are unchanged.${NC}"
+                JOB_REGEN_FAILED="the exit check failed (unregister-oracle.sh --all-registered exit $unregister_rc); new job ids could have left a registered key with no node behind it, so the jobs are unchanged"
+                return 1
+            fi
+        else
+            echo -e "${RED}unregister-oracle.sh not found at $TARGET_DIR — cannot check the dispatcher for registered job ids. The jobs are unchanged.${NC}"
+            JOB_REGEN_FAILED="unregister-oracle.sh not found at $TARGET_DIR, so the dispatcher could not be checked for registered job ids; the jobs are unchanged"
+            return 1
+        fi
+    fi
+
+    # Step 2: Regenerate job specifications (requires Chainlink node to be running)
+    echo -e "${BLUE}Step 2: Regenerating job specifications...${NC}"
     echo -e "${YELLOW}Note: The Chainlink node needs to be running for job regeneration.${NC}"
     
     # Check if Chainlink node is running
@@ -1795,8 +1850,18 @@ else
 fi
 
 # Upgrade Chainlink Node configurations
+# A preserved file is copied back over the checkout's, so nothing in this list may match a
+# file the repository ships. Until 2026-11 it said "*.toml": written in May 2025 for the
+# rendered job spec a single-arbiter install kept here (verdikta_job_spec.toml), it also
+# matched config_template.toml, added three days later. An install then kept the Chainlink
+# config template of its first installation, and its own regenerate-chainlink-config.sh,
+# update-rpc-endpoints.sh and the doctor's cfg.chainlink_template read that one (found on the
+# class-5555 canaries, 2026-11-23). The old job spec is named instead. The rendered jobs
+# (jobs/, since July 2025) are not in the list and never were: they come with the checkout's
+# copy, where configure-node.sh writes them. installer/tests/upgrade-chainlink-template.test.sh
+# runs this call, and holds every upgrade_component list to what the repository ships.
 echo -e "${BLUE}Upgrading Chainlink Node configurations...${NC}"
-upgrade_component "$REPO_CHAINLINK_NODE" "$TARGET_CHAINLINK_NODE" "Chainlink Node" "*.toml logs .api"
+upgrade_component "$REPO_CHAINLINK_NODE" "$TARGET_CHAINLINK_NODE" "Chainlink Node" "verdikta_job_spec.toml logs .api"
 
 # Upgrade Operator Contracts
 echo -e "${BLUE}Upgrading Operator Contracts...${NC}"
@@ -2348,7 +2413,17 @@ else
             # stake for the new ids and start them from fresh scores. So a registered node is
             # refused here, before anything changes; an unregistered one is reconfigured, and
             # registered afterwards only when the answers say so (VA_REGISTER_ORACLE=y).
+            #
+            # "Registered" is what the dispatcher's keeper holds for this operator
+            # contract, not only what installer/.contracts says: on 2026-11-11 (v1
+            # keeper) a 1 → 10 count change found the file's job id "Not
+            # registered", replaced the jobs and left the one that was registered
+            # with its stake and no node behind it. So when an aggregator is
+            # recorded but the file says the node is not registered, the exit
+            # check runs first with VA_DEREGISTER_ALL_REGISTERED=y (every job id of
+            # this operator is exited, and it fails unless none is left selectable).
             RECONF_REREGISTER=0
+            RECONF_DEREGISTER=0
             RECONF_AGGREGATOR=""
             RECONF_CLASSES="128"
             if [ -f "$TARGET_DIR/installer/.contracts" ]; then
@@ -2356,6 +2431,7 @@ else
                 RECONF_CLASSES="$(grep -E '^CLASSES_ID=' "$TARGET_DIR/installer/.contracts" | head -1 | sed -E 's/^[^=]+="?([^"]*)"?$/\1/')"
                 RECONF_ACTIVE="$(grep -E '^AGGREGATOR_REGISTRATION_ACTIVE=' "$TARGET_DIR/installer/.contracts" | head -1 | sed -E 's/^[^=]+="?([^"]*)"?$/\1/')"
                 RECONF_CLASSES="${RECONF_CLASSES:-128}"
+                [ -n "$RECONF_AGGREGATOR" ] && RECONF_DEREGISTER=1
                 case "${RECONF_ACTIVE:-true}" in
                     false|False|FALSE|0|no|No|NO) ;;
                     *) [ -n "$RECONF_AGGREGATOR" ] && RECONF_REREGISTER=1 ;;
@@ -2375,6 +2451,40 @@ else
                 RECONF_FAILED=1
                 RECONF_SUMMARY="the arbiter count was not changed: this node is registered, and replacing its $RECONF_TOTAL job id(s) would exit the registered keys (stake locked for 2 days), need a second stake and reset their scores; unregister and complete the exit first"
                 RECONF_REREGISTER=0
+            elif [ $RECONF_DEREGISTER -eq 1 ]; then
+                echo -e "${BLUE}Checking $RECONF_AGGREGATOR for job ids of this operator that are still registered, and exiting them, before reconfiguring...${NC}"
+                if [ -f "$TARGET_DIR/unregister-oracle.sh" ]; then
+                    cd "$TARGET_DIR"
+                    # The script runs under `set -e` with an ERR trap: a failing
+                    # dispatcher call must reach the check below, not kill the
+                    # upgrade mid-reconfigure (#38 — it did, with the node's
+                    # services left stopped). `set +e` around the call is not
+                    # enough: the ERR trap fires on any failing plain command even
+                    # with errexit off (#97), so the exit code is read with
+                    # `|| dereg_rc=$?` — a command on the left of `||` never
+                    # triggers the trap. Same for configure-node.sh and
+                    # register-oracle.sh below.
+                    dereg_rc=0
+                    if unattended_mode; then
+                        VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" run_echo_capture bash unregister-oracle.sh --unattended || dereg_rc=$?
+                    else
+                        VA_DEREGISTER_ALL_REGISTERED=y run_echo_capture bash unregister-oracle.sh <<< "$(printf 'y\n%s\ny' "$RECONF_AGGREGATOR")" || dereg_rc=$?
+                    fi
+                    dereg_out="$CAPTURED_OUT"
+                    RECONF_DEREGISTERED=$(printf '%s\n' "$dereg_out" | grep -c "Exit requested" || true)
+                    if [ "$dereg_rc" -ne 0 ]; then
+                        echo -e "${RED}The exit check failed. Reconfiguring now could leave a registered key with no node behind it — job reconfiguration cancelled.${NC}"
+                        RECONF_ABORT=1
+                        RECONF_FAILED=1
+                        RECONF_SUMMARY="requested the exit of $RECONF_DEREGISTERED job id(s) before the dispatcher call failed; the job specs are unchanged — fix the cause and run the same count change again (exits already requested are skipped)"
+                        if printf '%s\n' "$dereg_out" | grep -q "still registered and not exiting"; then
+                            RECONF_SUMMARY="requested the exit of $RECONF_DEREGISTERED job id(s), but the dispatcher still holds selectable job ids for this operator (named in the output above); replacing the jobs now could leave them with no node behind them, so the job specs are unchanged — run the same count change again"
+                        fi
+                    fi
+                else
+                    echo -e "${RED}unregister-oracle.sh not found at $TARGET_DIR — cannot check the dispatcher for registered job ids; job reconfiguration cancelled.${NC}"
+                    RECONF_ABORT=1
+                fi
             fi
 
             # Run the multi-arbiter configuration

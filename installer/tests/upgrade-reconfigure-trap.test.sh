@@ -16,8 +16,10 @@
 #
 # v2 (2026-11-20): a job id is an arbiter key, so a registered node is refused before anything
 # changes (an exit locks the stake for 2 days, new ids need a second stake and fresh scores), and
-# the block no longer deregisters. An unregistered node is reconfigured, and registered afterwards
-# only when the answers ask for it.
+# the block never exits its keys. A node the file calls unregistered but with an aggregator recorded
+# gets the exit check first (unregister-oracle.sh with VA_DEREGISTER_ALL_REGISTERED=y: the keeper,
+# not the file, decides; from main's #190), is then reconfigured, and registered afterwards only
+# when the answers ask for it.
 # Run: bash installer/tests/upgrade-reconfigure-trap.test.sh
 # UPGRADE_ARBITER_SH=<path> runs it against another copy of the script (e.g. to
 # show it fails on the pre-fix version).
@@ -39,7 +41,7 @@ block=$(awk '/^[[:space:]]*# Reconfiguration replaces EVERY job id/{p=1}
 [ -n "$block" ] && ok || bad "could not extract the reconfiguration block from $S"
 [ "$(printf '%s\n' "$block" | tail -1 | tr -d ' ')" = "fi" ] && ok || bad "block does not end on the RECONF_RC fi: $(printf '%s\n' "$block" | tail -1)"
 printf '%s\n' "$block" | bash -n && ok || bad "block is not a complete shell fragment"
-echo "$block" | grep -q 'unregister-oracle.sh --unattended' && bad "block still deregisters (v2 refuses a registered node instead)" || ok
+echo "$block" | grep -q 'VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y' && ok || bad "block does not run the exit check for a node the file calls unregistered"
 echo "$block" | grep -q 'configure-node.sh"' && ok || bad "block does not call configure-node.sh"
 echo "$block" | grep -q 'bash register-oracle.sh' && ok || bad "block does not call register-oracle.sh"
 # The block calls run_echo_capture (a function; a failing function call fires
@@ -61,16 +63,22 @@ AGGREGATOR_REGISTRATION_ACTIVE="${ACTIVE:-true}"
 JOB_ID_1="job-one"
 JOB_ID_2="job-two"
 EOF
+    # CONTRACTS_EDIT: a sed expression applied to the live file for one scenario
+    # (a registration recorded as inactive, or no aggregator recorded at all).
+    if [ -n "${CONTRACTS_EDIT:-}" ]; then sed -i.bak -e "$CONTRACTS_EDIT" "$I/installer/.contracts"; rm -f "$I/installer/.contracts.bak"; fi
     { cat "$I/installer/.contracts"; printf 'KEY_COUNT=1\nKEY_1_ADDRESS="0xKEY"\nOPERATOR_ADDR="0xOP"\n'; } > "$SRC/.contracts"
 }
 # Stubs. Each exits with the code the scenario sets; the interactive variants
 # read the piped answers so the test can see them arrive.
 cat > "$I/unregister-oracle.sh" <<'STUB'
 #!/bin/bash
-echo "STUB-UNREGISTER args=[$*] VA_DEREGISTER_ORACLE=${VA_DEREGISTER_ORACLE:-} agg=${VA_AGGREGATOR_ADDRESS:-}"
+echo "STUB-UNREGISTER args=[$*] VA_DEREGISTER_ORACLE=${VA_DEREGISTER_ORACLE:-} agg=${VA_AGGREGATOR_ADDRESS:-} all=${VA_DEREGISTER_ALL_REGISTERED:-}"
 if [ "${1:-}" != "--unattended" ]; then read -r a; read -r b; read -r c; echo "STUB-UNREGISTER answers=$a,$b,$c"; fi
-echo "Deregistered job-one"
-[ "${DEREG_RC:-0}" = 0 ] && echo "Deregistered job-two"
+echo "✓ Exit requested (tx: 0x01 )"
+[ "${DEREG_RC:-0}" = 0 ] && echo "✓ Exit requested (tx: 0x02 )"
+# What unregister-oracle-cl.js --all-registered says when the keeper still
+# holds a selectable job id of this operator at the end (it exits 1).
+[ -n "${DEREG_LEFT:-}" ] && echo "Error during oracle exit: Error: 1 job id(s) of this operator are still registered and not exiting: $DEREG_LEFT. With no node behind them they would still be drawn."
 exit "${DEREG_RC:-0}"
 STUB
 cat > "$SRC/bin/configure-node.sh" <<'STUB'
@@ -149,7 +157,7 @@ hasnt "register-fails: trap"      "$out" "TRAP-FIRED"
 
 # 5. Unregistered, everything succeeds, no registration asked for: configured, nothing registered.
 out=$(ACTIVE=false run 0 0 0)
-hasnt "ok: no deregistration"     "$out" "STUB-UNREGISTER"
+has   "ok: exit check ran"        "$out" "STUB-UNREGISTER args=\[--unattended\] VA_DEREGISTER_ORACLE=y agg=0xAGG all=y"
 has   "ok: configured"            "$out" "Job and key reconfiguration completed successfully"
 hasnt "ok: not registered"        "$out" "STUB-REGISTER"
 has   "ok: flags"                 "$out" "REACHED-END abort=0 failed=0 rc=0"
@@ -160,6 +168,45 @@ hasnt "ok: trap"                  "$out" "TRAP-FIRED"
 out=$(ACTIVE=false VA_REGISTER_ORACLE=y run 0 0 0)
 has   "ok+register: registered"   "$out" "New job ids registered with the dispatcher"
 has   "ok+register: flags"        "$out" "REACHED-END abort=0 failed=0 rc=0"
+
+# 7. The file says the node is not registered, but an aggregator is recorded: the keeper
+#    decides (main's #190, 2026-11-11), so the exit check runs first. When its dispatcher
+#    call fails, the jobs are not replaced and the summary says why.
+out=$(ACTIVE=false run 1 0 0)
+has   "exit-check-fails: called"    "$out" "STUB-UNREGISTER args=\[--unattended\] VA_DEREGISTER_ORACLE=y agg=0xAGG all=y"
+has   "exit-check-fails: cancelled" "$out" "The exit check failed. Reconfiguring now could leave a registered key"
+hasnt "exit-check-fails: configure" "$out" "STUB-CONFIGURE"
+has   "exit-check-fails: failed"    "$out" "Job and key reconfiguration failed!"
+has   "exit-check-fails: stopped"   "$out" "STUB-STOP"
+has   "exit-check-fails: flags"     "$out" "REACHED-END abort=1 failed=1 rc=1"
+has   "exit-check-fails: summary"   "$out" "SUMMARY=requested the exit of 1 job id(s) before the dispatcher call failed"
+hasnt "exit-check-fails: trap"      "$out" "TRAP-FIRED"
+has   "exit-check-fails: exit 0"    "$out" "rc=0"
+#    ...interactive: the answers arrive, every registered id is asked for.
+out=$(ACTIVE=false run 1 0 0 "")
+has   "exit-check-fails/tty: answers" "$out" "STUB-UNREGISTER answers=y,0xAGG,y"
+has   "exit-check-fails/tty: all"     "$out" "STUB-UNREGISTER args=\[\] VA_DEREGISTER_ORACLE= agg= all=y"
+has   "exit-check-fails/tty: flags"   "$out" "REACHED-END abort=1 failed=1 rc=1"
+hasnt "exit-check-fails/tty: trap"    "$out" "TRAP-FIRED"
+
+# 8. The keeper still holds a selectable job id for this operator that the file does not
+#    name (the 2026-11-11 case): unregister-oracle.sh exits 1, the jobs are not replaced.
+out=$(ACTIVE=false DEREG_LEFT=old-job run 1 0 0)
+has   "left-behind: cancelled"    "$out" "Reconfiguring now could leave a registered key"
+hasnt "left-behind: configure"    "$out" "STUB-CONFIGURE"
+hasnt "left-behind: register"     "$out" "STUB-REGISTER"
+has   "left-behind: flags"        "$out" "REACHED-END abort=1 failed=1 rc=1"
+has   "left-behind: summary"      "$out" "SUMMARY=requested the exit of 1 job id(s), but the dispatcher still holds selectable job ids for this operator"
+hasnt "left-behind: trap"         "$out" "TRAP-FIRED"
+
+# 9. No aggregator recorded (a node that was never registered): nothing to check, the jobs
+#    are reconfigured as before.
+out=$(CONTRACTS_EDIT='/^AGGREGATOR_/d' run 0 0 0)
+hasnt "never-registered: exit check" "$out" "STUB-UNREGISTER"
+has   "never-registered: config"     "$out" "STUB-CONFIGURE"
+hasnt "never-registered: register"   "$out" "STUB-REGISTER"
+has   "never-registered: flags"      "$out" "REACHED-END abort=0 failed=0 rc=0"
+hasnt "never-registered: trap"       "$out" "TRAP-FIRED"
 
 # The pattern itself: the block's code (comments aside) must not rely on
 # `set +e` around the three calls.
