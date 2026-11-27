@@ -250,8 +250,8 @@ arbiter is one job: its key is `keyOf(oracle, jobId)` = `keccak256(abi.encodePac
 - **Scoring (settlement, `applyOutcomes`):** two scores, quality and timeliness, 0..`cap` (1000), new
   keys start at 500. Timeliness: promoted and revealed +20; promoted, no reveal, round finished -200;
   promoted, no reveal, round failed -500; no commit when the round failed for lack of commits -400
-  (only if some slot committed: a round with no commit at all charges nobody, since that is the
-  request's or a shared outage's fault); committed but not promoted, no change.
+  (only to a slot that was sent the job, and only if at least half of M committed: a round with
+  fewer commits charges nobody, since that is the request's or a shared outage's fault); committed but not promoted, no change.
   Quality (the revealed answer against the round's median and spread): close +20, off -50, far -200.
   A score that reaches 0 blocks the arbiter for `lockDuration` (24 h) x 2^offenses and restarts it at
   500; one offense is forgiven per `decayPeriod` (90 days); the `maxOffenses`-th (3) block is a
