@@ -1334,10 +1334,13 @@ node "$UTIL_DIR/configure-service-auth.cjs" configure "$TARGET_DIR"
 export VERDIKTA_AUTH_ROOT="$TARGET_DIR"
 
 # Re-registration below must use the admission-aware script, including on
-# installations whose operator sources were previously left untouched.
+# installations whose operator sources were previously left untouched. The
+# script needs every module it requires from scripts/lib (the admission check,
+# the in-flight guard, the owner wallet's gas check), so the directory goes
+# with it: the install's copy can be older than any of them.
 mkdir -p "$TARGET_DIR/arbiter-operator/scripts/lib"
 cp "$REPO_ROOT/arbiter-operator/scripts/register-oracle-cl.js" "$TARGET_DIR/arbiter-operator/scripts/register-oracle-cl.js"
-cp "$REPO_ROOT/arbiter-operator/scripts/lib/request-authorization.js" "$TARGET_DIR/arbiter-operator/scripts/lib/request-authorization.js"
+cp "$REPO_ROOT/arbiter-operator/scripts/lib/"*.js "$TARGET_DIR/arbiter-operator/scripts/lib/"
 
 # Check for job specification template changes BEFORE component upgrades
 echo -e "${BLUE}Checking for job specification template changes...${NC}"
@@ -1479,15 +1482,27 @@ regenerate_job_specs() {
         fi
         if [ -f "$TARGET_DIR/unregister-oracle.sh" ]; then
             cd "$TARGET_DIR" || return 1
+            # The regenerated jobs are registered again in Step 3, as many as there
+            # are now. VA_DEREGISTER_THEN_REGISTER has the deregistration check the
+            # owner wallet's ETH against both halves before it sends anything
+            # (exit 66): a wallet that can pay for the deregistrations only would
+            # otherwise leave the node with no job registered.
+            local regen_job_count
+            regen_job_count=$(grep -cE '^JOB_ID_[0-9]+=' "$TARGET_DIR/installer/.contracts" 2>/dev/null || true)
+            [[ "$regen_job_count" =~ ^[0-9]{1,2}$ ]] || regen_job_count=0
             # Use the existing unregister script non-interactively
             local unregister_rc=0
             if unattended_mode; then
-                VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$aggregator_addr" bash unregister-oracle.sh --unattended || unregister_rc=$?
+                VA_DEREGISTER_THEN_REGISTER="$regen_job_count" VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$aggregator_addr" bash unregister-oracle.sh --unattended || unregister_rc=$?
             else
-                VA_DEREGISTER_ALL_REGISTERED=y bash unregister-oracle.sh <<< "$(printf 'y\n%s\ny' "$aggregator_addr")" || unregister_rc=$?
+                VA_DEREGISTER_THEN_REGISTER="$regen_job_count" VA_DEREGISTER_ALL_REGISTERED=y bash unregister-oracle.sh <<< "$(printf 'y\n%s\ny' "$aggregator_addr")" || unregister_rc=$?
             fi
             if [ "$unregister_rc" -eq 0 ]; then
                 echo -e "${GREEN}Successfully unregistered from aggregator${NC}"
+            elif [ "$unregister_rc" -eq 66 ]; then
+                echo -e "${RED}The owner wallet cannot pay the gas for replacing the jobs (the line starting \"The owner wallet\" above gives the amounts). The job specs are unchanged.${NC}"
+                JOB_REGEN_FAILED="the owner wallet cannot pay the gas for deregistering the current jobs and registering their replacements (the line starting \"The owner wallet\" in the output gives the amounts); the job specs are unchanged and every job id still registered keeps its stake. Fund the wallet and run the upgrade again"
+                return 1
             else
                 echo -e "${RED}Unregistration failed (exit $unregister_rc). Regenerating the jobs now would strand the stake on the current job ids: the jobs and the stake on them are unchanged.${NC}"
                 JOB_REGEN_FAILED="deregistration failed (unregister-oracle.sh exit $unregister_rc); new job ids would have stranded the stake on the current ones, so the jobs and the stake on them are unchanged"
@@ -2480,6 +2495,28 @@ else
             RECONF_FAILED=0
             RECONF_SUMMARY=""
             RECONF_TOTAL=$(grep -cE '^JOB_ID_[0-9]+=' "$TARGET_DIR/installer/.contracts" 2>/dev/null || echo 0)
+            # How many registrations follow the deregistration, for its check of
+            # the owner wallet's ETH (VA_DEREGISTER_THEN_REGISTER): the wallet
+            # must be able to pay for the whole change before the first job is
+            # deregistered. On 2026-11-21 it could pay for ten deregistrations
+            # and not for the nine registrations after them, and the node had no
+            # job registered until the wallet was funded. The new count is
+            # VA_ARBITER_COUNT when the answers give it; otherwise it is asked
+            # later, by configure-node.sh, so the check takes the most it allows.
+            RECONF_THEN_REGISTER=0
+            RECONF_WILL_REGISTER=$RECONF_REREGISTER
+            if unattended_mode && [ -n "${VA_REGISTER_ORACLE:-}" ]; then
+                case "$(printf '%s' "$VA_REGISTER_ORACLE" | tr '[:upper:]' '[:lower:]')" in
+                    y|yes|true|1) RECONF_WILL_REGISTER=1 ;;
+                    *) RECONF_WILL_REGISTER=0 ;;
+                esac
+            fi
+            if [ $RECONF_WILL_REGISTER -eq 1 ]; then
+                RECONF_THEN_REGISTER=10
+                if [[ "${VA_ARBITER_COUNT:-}" =~ ^([1-9]|10)$ ]]; then
+                    RECONF_THEN_REGISTER="$VA_ARBITER_COUNT"
+                fi
+            fi
             if [ $RECONF_DEREGISTER -eq 1 ]; then
                 echo -e "${BLUE}Deregistering every job of this operator from $RECONF_AGGREGATOR before reconfiguring (stake is refunded)...${NC}"
                 if [ -f "$TARGET_DIR/unregister-oracle.sh" ]; then
@@ -2495,9 +2532,9 @@ else
                     # register-oracle.sh below.
                     dereg_rc=0
                     if unattended_mode; then
-                        VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" run_echo_capture bash unregister-oracle.sh --unattended || dereg_rc=$?
+                        VA_DEREGISTER_THEN_REGISTER="$RECONF_THEN_REGISTER" VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" run_echo_capture bash unregister-oracle.sh --unattended || dereg_rc=$?
                     else
-                        VA_DEREGISTER_ALL_REGISTERED=y run_echo_capture bash unregister-oracle.sh <<< "$(printf 'y\n%s\ny' "$RECONF_AGGREGATOR")" || dereg_rc=$?
+                        VA_DEREGISTER_THEN_REGISTER="$RECONF_THEN_REGISTER" VA_DEREGISTER_ALL_REGISTERED=y run_echo_capture bash unregister-oracle.sh <<< "$(printf 'y\n%s\ny' "$RECONF_AGGREGATOR")" || dereg_rc=$?
                     fi
                     dereg_out="$CAPTURED_OUT"
                     RECONF_DEREGISTERED=$(printf '%s\n' "$dereg_out" | grep -c "Deregistered" || true)
@@ -2506,6 +2543,12 @@ else
                         RECONF_ABORT=1
                         RECONF_FAILED=1
                         RECONF_SUMMARY="deregistered $RECONF_DEREGISTERED of $RECONF_TOTAL job(s) before the dispatcher call failed; the stake on the rest is intact and the job specs are unchanged — fix the cause and run the same count change again (jobs already deregistered are skipped)"
+                        # Exit 66: the owner wallet cannot pay. The script's own line has
+                        # the wallet, what it holds and what is missing.
+                        if [ "$dereg_rc" -eq 66 ]; then
+                            dereg_funds="$(printf '%s\n' "$dereg_out" | grep -o 'The owner wallet 0x.*' | head -1 || true)"
+                            RECONF_SUMMARY="the owner wallet cannot pay the gas for this job change. ${dereg_funds:-The deregistration output above gives the amounts.} Deregistered $RECONF_DEREGISTERED of $RECONF_TOTAL job(s); the job specs are unchanged and every job id still registered keeps its stake. Fund the wallet and run the same count change again"
+                        fi
                         if printf '%s\n' "$dereg_out" | grep -q "still registered for this operator"; then
                             RECONF_SUMMARY="deregistered $RECONF_DEREGISTERED job(s), but the dispatcher still lists job ids for this operator (named in the deregistration output above); replacing the jobs now would strand their stake, so the job specs are unchanged — run the same count change again"
                         fi

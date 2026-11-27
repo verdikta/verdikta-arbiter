@@ -11,6 +11,16 @@
 # node's jobs, so a registered job that .contracts no longer names cannot be
 # left behind with its 100 wVDKA stake (it was, on Base mainnet, 2026-11-11).
 # Without it such job ids are reported and left alone.
+#
+# --then-register N (or VA_DEREGISTER_THEN_REGISTER=N): N registrations follow
+# this run. The owner wallet's ETH is then checked, before anything is sent,
+# against the deregistrations and those registrations together.
+# upgrade-arbiter.sh passes the new job count, so a job change the wallet
+# cannot finish is refused while the node is still registered (on 2026-11-21
+# one deregistered ten jobs and could not register their replacements).
+#
+# Exit codes: 66 = the owner wallet cannot pay the gas (one line says how much
+# is missing), 65 = no aggregator to deregister from, 1 = anything else.
 
 set -e  # Exit on any error
 
@@ -42,19 +52,24 @@ _load_prompts_lib() {
 ANSWERS_FILE=""
 UNATTENDED_REQUESTED=false
 ALL_REGISTERED=false
+THEN_REGISTER=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --answers|-a) shift; [ -z "${1:-}" ] && { echo "--answers requires a file argument"; exit 1; }; ANSWERS_FILE="$1"; shift ;;
         --unattended) UNATTENDED_REQUESTED=true; shift ;;
         --all-registered) ALL_REGISTERED=true; shift ;;
+        --then-register) shift; [ -z "${1:-}" ] && { echo "--then-register requires a number of registrations"; exit 1; }; THEN_REGISTER="$1"; shift ;;
         --help|-h)
-            echo "Usage: $0 [--answers FILE | --unattended] [--all-registered]"
+            echo "Usage: $0 [--answers FILE | --unattended] [--all-registered] [--then-register N]"
             echo "  --answers FILE    answer every prompt from FILE (VA_* KEY=value lines)"
             echo "  --unattended      answer every prompt from VA_* environment variables"
             echo "  --all-registered  also deregister every other job id the dispatcher lists for"
             echo "                    this operator contract (one that installer/.contracts no"
             echo "                    longer names), and fail unless none is left"
             echo "                    (same as VA_DEREGISTER_ALL_REGISTERED=y)"
+            echo "  --then-register N N registrations follow (a job change): check that the owner"
+            echo "                    wallet can pay the gas for the deregistrations and for them,"
+            echo "                    before anything is sent (same as VA_DEREGISTER_THEN_REGISTER=N)"
             exit 0 ;;
         *) echo "Unknown option: $1 (see --help)"; exit 1 ;;
     esac
@@ -88,6 +103,15 @@ fi
 case "$(printf '%s' "${VA_DEREGISTER_ALL_REGISTERED:-}" | tr '[:upper:]' '[:lower:]')" in
     y|yes|true|1) ALL_REGISTERED=true ;;
 esac
+# The flag wins over the variable. Not a prompt either.
+if [ -z "$THEN_REGISTER" ]; then
+    THEN_REGISTER="${VA_DEREGISTER_THEN_REGISTER:-0}"
+fi
+if [[ ! "$THEN_REGISTER" =~ ^[0-9]{1,2}$ ]]; then
+    echo "Error: the number of registrations that follow (--then-register / VA_DEREGISTER_THEN_REGISTER) must be a number from 0 to 99, not \"$THEN_REGISTER\"."
+    exit 1
+fi
+THEN_REGISTER=$((10#$THEN_REGISTER))
 ARBITER_OPERATOR_DIR="$INSTALL_DIR/arbiter-operator"
 CONTRACTS_FILE="$INSTALL_DIR/installer/.contracts"
 
@@ -336,6 +360,8 @@ UNREGISTER_CMD="HARDHAT_NETWORK=$DEPLOYMENT_NETWORK node scripts/unregister-orac
   --jobids $UNREGISTRATION_JOB_IDS"
 [ "$ALL_REGISTERED" = "true" ] && UNREGISTER_CMD="$UNREGISTER_CMD \
   --all-registered"
+[ "$THEN_REGISTER" -gt 0 ] && UNREGISTER_CMD="$UNREGISTER_CMD \
+  --then-register $THEN_REGISTER"
 
 # Display the command and ask for confirmation
 echo ""
@@ -344,6 +370,7 @@ echo -e "  Aggregator Address: $NEW_AGGREGATOR_ADDRESS"
 echo -e "  Oracle Address:     $OPERATOR_ADDR"
 echo -e "  Total Jobs:         ${#JOB_IDS_AVAILABLE[@]}"
 [ "$ALL_REGISTERED" = "true" ] && echo -e "  Also:               every other job id registered for this operator contract"
+[ "$THEN_REGISTER" -gt 0 ] && echo -e "  Gas check covers:   these deregistrations and the $THEN_REGISTER registration(s) that follow"
 echo ""
 echo -e "${BLUE}The following command will be executed:${NC}"
 echo "$UNREGISTER_CMD"
@@ -356,9 +383,13 @@ fi
 # Execute the unregistration command
 echo -e "${BLUE}Executing oracle unregistration...${NC}"
 cd "$ARBITER_OPERATOR_DIR"
-eval "$UNREGISTER_CMD"
+# The exit code is kept: 66 says the owner wallet cannot pay, and the upgrade
+# reads it. (Under `set -e` a bare failing `eval` ended the script right here,
+# and the "failed" message below was never printed.)
+UNREGISTER_RC=0
+eval "$UNREGISTER_CMD" || UNREGISTER_RC=$?
 
-if [ $? -eq 0 ]; then
+if [ $UNREGISTER_RC -eq 0 ]; then
     echo -e "${GREEN}Oracle unregistration completed successfully!${NC}"
     # Mark inactive in .contracts but keep AGGREGATOR_ADDRESS / CLASSES_ID so register-oracle.sh
     # can show the last values; register-oracle.sh only warns on duplicate when active is true.
@@ -381,7 +412,7 @@ if [ $? -eq 0 ]; then
     
 else
     echo -e "${RED}Oracle unregistration failed. Please check the output above for errors.${NC}"
-    exit 1
+    exit $UNREGISTER_RC
 fi
 
 exit 0

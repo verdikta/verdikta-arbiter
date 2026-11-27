@@ -101,6 +101,11 @@ async function listRegisteredJobs(keeper, oracle, { passes = 4, tries, delayMs, 
  *                  every job of the node, so nothing of the operator's may stay
  *                  behind. Without it, such ids are reported and left alone.
  *   deregisterOne  async (bytes32, label) — sends the transaction and waits.
+ *   beforeSend     async ({ pending }) — called once, after every read and
+ *                  before the first transaction, with the ids about to be
+ *                  deregistered (possibly none). What it throws ends the run
+ *                  with nothing sent: the caller checks there that the owner
+ *                  wallet can pay for all of it.
  *
  * Returns { deregistered, skipped, unlisted, remaining } (bytes32 arrays).
  * Throws when a send fails, when allRegistered is set and the registry cannot
@@ -111,6 +116,7 @@ async function runDeregistration({
   jobIds = [],
   allRegistered = false,
   deregisterOne,
+  beforeSend = null,
   log = console.log,
   readOptions = {},
   settleTries = 5,
@@ -150,13 +156,21 @@ async function runDeregistration({
     }
   }
 
-  /* 2. Deregister. */
+  /* 2. Which of them are registered? Every read comes before the first send,
+   *    so the run can still be refused whole (beforeSend). */
+  const infos = new Map();
+  for (const id of targets) {
+    infos.set(id, await withRetry(() => keeper.getOracleInfo(oracle, id), readOptions));
+  }
+  if (beforeSend) await beforeSend({ pending: targets.filter((id) => isRegistered(infos.get(id))) });
+
+  /* 3. Deregister. */
   const deregistered = [];
   const skipped = [];
   for (const id of targets) {
     const label = labels.get(id);
     log(`\nJobID ${label} → ${id}`);
-    const info = await withRetry(() => keeper.getOracleInfo(oracle, id), readOptions);
+    const info = infos.get(id);
     if (!isRegistered(info)) {
       log("Not registered – skipping");
       skipped.push(id);
@@ -167,7 +181,7 @@ async function runDeregistration({
     deregistered.push(id);
   }
 
-  /* 3. Nothing of this operator's may be left when every job is being replaced. */
+  /* 4. Nothing of this operator's may be left when every job is being replaced. */
   let remaining = [];
   if (allRegistered) {
     /* A load-balanced RPC can answer from a backend a block or two behind the

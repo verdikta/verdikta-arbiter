@@ -35,6 +35,42 @@ const rpcUrlForNetwork = ({ directEnv, listEnv, infuraUrl }) => {
   return infuraUrl;
 };
 
+// ──────────────────────────────────────────────────────────────────────────
+// 2. Gas price: the network's, unless VERDIKTA_GAS_PRICE_GWEI pins one
+//
+//    "auto" is Hardhat's own default: an EIP-1559 transaction whose max fee is
+//    the next block's base fee with room for two full blocks, plus the last
+//    block's median tip. It pays the base fee and that tip, nothing more.
+//
+//    Until 2026-11 these networks had fixed prices here (5 gwei on Base
+//    Sepolia, 1 gwei on Base). A fixed price is sent as a legacy transaction,
+//    which pays all of it: on 2026-11-21 Base Sepolia asked 0.005 gwei, one
+//    deregisterOracle cost 0.0009 ETH instead of about 0.000001, and ten of
+//    them emptied an owner wallet in the middle of a job-count change.
+//
+//    VERDIKTA_GAS_PRICE_GWEI=<gwei> (in the environment of the command, or in
+//    this directory's .env) pins a legacy price again: for an RPC endpoint
+//    with no eth_feeHistory, or to push a transaction through a fee spike.
+//
+//    Keep this in this file: configure-node.sh and deploy-contracts.sh copy
+//    hardhat.config.js alone into a build directory, so it can require nothing
+//    of ours.
+// ──────────────────────────────────────────────────────────────────────────
+const MAX_PINNED_GAS_PRICE_GWEI = 500;
+const gasPriceSetting = (env = process.env) => {
+  const raw = String(env.VERDIKTA_GAS_PRICE_GWEI ?? "").trim();
+  if (raw === "" || raw.toLowerCase() === "auto") return "auto";
+  const problem = (why) =>
+    new Error(`VERDIKTA_GAS_PRICE_GWEI="${raw}" ${why}. Give a gas price in gwei (for example 0.05), or leave it unset to pay the network's price.`);
+  if (!/^[0-9]+(\.[0-9]{1,9})?$/.test(raw)) throw problem("is not a decimal number of gwei");
+  const [whole, fraction = ""] = raw.split(".");
+  const wei = BigInt(whole) * 1_000_000_000n + BigInt(fraction.padEnd(9, "0"));
+  if (wei === 0n) throw problem("is zero");
+  if (wei > BigInt(MAX_PINNED_GAS_PRICE_GWEI) * 1_000_000_000n) throw problem(`is above ${MAX_PINNED_GAS_PRICE_GWEI} gwei`);
+  return Number(wei);
+};
+const GAS_PRICE = gasPriceSetting();
+
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
   solidity: {
@@ -65,7 +101,7 @@ module.exports = {
       httpsAgent: keepAliveAgent,
       chainId: 11155111,
       gas: 18_500_000,
-      gasPrice: 10_000_000_000,
+      gasPrice: GAS_PRICE,
       accounts: ACCOUNTS,
     },
 
@@ -79,7 +115,7 @@ module.exports = {
       httpsAgent: keepAliveAgent,
       chainId: 84532,
       gas: 10_000_000,
-      gasPrice: 5_000_000_000,
+      gasPrice: GAS_PRICE,
       accounts: ACCOUNTS,
     },
 
@@ -94,7 +130,7 @@ module.exports = {
       chainId: 8453,
       // Remove hardcoded gas limit to let ethers estimate it
       // gas: 10_000_000,  
-      gasPrice: 1_000_000_000, // 1 gwei
+      gasPrice: GAS_PRICE,
       accounts: ACCOUNTS,
     },
   },

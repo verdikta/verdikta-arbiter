@@ -23,6 +23,18 @@ HARDHAT_NETWORK=base_sepolia node scripts/unregister-oracle-cl.js \
                      left behind with its stake. --jobids is optional with it.
                      Without it such ids are reported and left alone.
 
+  --then-register N  N registrations follow this run (a job change: the
+                     installer passes the new job count). The owner wallet's
+                     ETH is checked, before anything is sent, against the
+                     deregistrations AND those registrations with their
+                     approval and the key authorization, so a wallet that can
+                     pay for the first half only is refused while the node is
+                     still registered. Without it the check covers the
+                     deregistrations.
+
+  Exit code 66: the owner wallet cannot pay the gas (one line says how much
+  is missing). Any other failure is 1.
+
 */
 
 require("dotenv").config();
@@ -32,6 +44,10 @@ const yargs = require("yargs/yargs");
 const { hideBin } = require("yargs/helpers");
 const { createInFlightGuard } = require("./lib/inflight.js");
 const { runDeregistration } = require("./lib/registry.js");
+const {
+  OWNER_FUNDS, OWNER_FUNDS_EXIT, RERUN_DEREGISTER,
+  deregistrationBudget, checkGasBudget, isInsufficientFunds, describeRefusedSend,
+} = require("./lib/funds.js");
 
 /* ------------------------------------------------------------------- */
 /* Minimal ABIs                                                        */
@@ -60,6 +76,7 @@ const OWNER_ABI = [
 /* Main                                                                */
 /* ------------------------------------------------------------------- */
 (async () => {
+  let funds = null;   // { provider, sender } once known, for the last catch
   try {
     /* Args ------------------------------------------------------------ */
     const argv = yargs(hideBin(process.argv))
@@ -69,13 +86,16 @@ const OWNER_ABI = [
       // string: true — yargs would turn an all-digit job id into a number.
       .option("jobids",          { alias: "j", type: "array",  string: true, default: [] })
       .option("all-registered",  { type: "boolean", default: false })
+      .option("then-register",   { type: "number",  default: 0 })
       .check((a) => a.jobids.length > 0 || a["all-registered"] || "Give --jobids, --all-registered, or both")
+      .check((a) => (Number.isInteger(a["then-register"]) && a["then-register"] >= 0 && a["then-register"] <= 100) || "--then-register takes a number of registrations, 0 to 100")
       .strict()
       .argv;
 
     const [signer] = await ethers.getSigners();
     const caller   = await signer.getAddress();
     const { sendWithRetry, isInFlightLimit } = createInFlightGuard({ provider: ethers.provider, sender: caller });
+    funds = { provider: ethers.provider, sender: caller };
     console.log("Caller:", caller);
 
     /* Resolve keeper -------------------------------------------------- */
@@ -119,6 +139,10 @@ const OWNER_ABI = [
         });
       } catch (error) {
         if (isInFlightLimit(error)) throw error; // retries exhausted — not a gas problem
+        /* Nor is a wallet that cannot pay: another gas limit cannot help. */
+        if (isInsufficientFunds(error)) {
+          throw await describeRefusedSend({ error, ...funds, what: `deregistering job id ${rawId}`, rerun: RERUN_DEREGISTER });
+        }
         console.error("Gas estimation failed, trying with fallback gas limit...");
         const fallbackGasLimit = 300000;
         console.log(`  Using fallback gas limit: ${fallbackGasLimit}`);
@@ -130,12 +154,26 @@ const OWNER_ABI = [
       }
     };
 
+    /* ETH for gas: every call of this run at the most it can cost, and with
+       --then-register the registrations that follow it, before any is sent. */
+    const beforeSend = async ({ pending }) => {
+      const budget = deregistrationBudget({ deregistrations: pending.length, thenRegister: argv["then-register"] });
+      if (!budget) return;
+      await checkGasBudget({
+        ...funds,
+        configuredGasPrice: hre.network.config.gasPrice,
+        ...budget,
+        rerun: RERUN_DEREGISTER,
+      });
+    };
+
     await runDeregistration({
       keeper,
       oracle: argv.oracle,
       jobIds: argv.jobids,
       allRegistered: argv["all-registered"],
       deregisterOne,
+      beforeSend,
     });
 
     /* wVDKA balance after -------------------------------------------- */
@@ -144,6 +182,15 @@ const OWNER_ABI = [
     console.log("Oracle deregistration completed successfully");
     process.exit(0);
   } catch (err) {
+    /* The owner wallet cannot pay: one line, no stack, its own exit code. */
+    let shown = err;
+    if (shown && shown.code !== OWNER_FUNDS && funds && isInsufficientFunds(shown)) {
+      shown = await describeRefusedSend({ error: shown, ...funds, what: "this call", rerun: RERUN_DEREGISTER });
+    }
+    if (shown && shown.code === OWNER_FUNDS) {
+      console.error(`Error during oracle deregistration: ${shown.message}`);
+      process.exit(OWNER_FUNDS_EXIT);
+    }
     console.error("Error during oracle deregistration:", err);
     process.exit(1);
   }

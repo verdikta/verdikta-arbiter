@@ -33,6 +33,7 @@ const yargs = require("yargs/yargs");
 const { hideBin } = require("yargs/helpers");
 const { createInFlightGuard } = require("./lib/inflight.js");
 const { ensureRequestAuthorization, OperatorAuthorizationABI } = require("./lib/request-authorization.js");
+const { OWNER_FUNDS, GAS_BUDGET, checkGasBudget, isInsufficientFunds, describeRefusedSend } = require("./lib/funds.js");
 
 /* ------------------------------------------------------------------- */
 /* Minimal ABIs                                                        */
@@ -71,6 +72,7 @@ const toBytes32 = (id) => {
 /* Main                                                                */
 /* ------------------------------------------------------------------- */
 (async () => {
+  let funds = null;   // { provider, sender } once known, for the last catch
   try {
     /* Args ------------------------------------------------------------ */
     const argv = yargs(hideBin(process.argv))
@@ -90,6 +92,7 @@ const toBytes32 = (id) => {
 
     /* Contracts ------------------------------------------------------- */
     const provider   = ethers.provider;
+    funds = { provider, sender: owner };
     const aggregator = new ethers.Contract(argv.aggregator, AggregatorABI, provider);
 
     const keeperAddr = await aggregator.reputationKeeper();
@@ -168,9 +171,28 @@ const toBytes32 = (id) => {
     }
 
     let allow = await verdikta.allowance(owner, keeperAddr);
+
+    /* ETH for gas: every call below at the most it can cost, before any is
+       sent. A wallet that runs dry part way leaves some job ids registered and
+       some not, and used to say so with a ProviderError and its stack. */
+    await checkGasBudget({
+      provider,
+      sender: owner,
+      configuredGasPrice: hre.network.config.gasPrice,
+      what: `${pendingJobs.length} registration(s)`,
+      calls: [
+        { count: pendingJobs.length, gas: GAS_BUDGET.register },
+        { count: allow < totalStake ? 1 : 0, gas: GAS_BUDGET.approve },
+      ],
+    });
+
     if (allow < totalStake) {
       console.log(`Approving ${ethers.formatEther(totalStake)} wVDKA…`);
-      await (await verdikta.approve(keeperAddr, totalStake)).wait();
+      /* An explicit limit: without one the signer gives the call the
+         network's configured `gas` (10,000,000 on Base Sepolia), and the node
+         wants the wallet to hold that much gas at the max fee before it takes
+         the transaction. */
+      await (await verdikta.approve(keeperAddr, totalStake, { gasLimit: GAS_BUDGET.approve })).wait();
     }
 
     /* Register each pending job ID ----------------------------------- */
@@ -199,6 +221,11 @@ const toBytes32 = (id) => {
         });
       console.log("✓ Registered");
       } catch (estimateError) {
+        /* Not a gas-limit problem: another limit, the static calls and a
+           third send below cannot help, and each one buries the reason. */
+        if (isInsufficientFunds(estimateError)) {
+          throw await describeRefusedSend({ error: estimateError, provider, sender: owner, what: `registering job id ${raw}` });
+        }
         console.error("Gas estimation failed, trying with fallback gas limit...");
         
         // Try with a reasonable fallback gas limit for mainnet
@@ -213,6 +240,9 @@ const toBytes32 = (id) => {
           console.log("✓ Registered with fallback gas limit");
           continue; // Skip the error handling below and move to next job
         } catch (fallbackError) {
+          if (isInsufficientFunds(fallbackError)) {
+            throw await describeRefusedSend({ error: fallbackError, provider, sender: owner, what: `registering job id ${raw}` });
+          }
           console.error("Fallback transaction also failed:", fallbackError.message);
         }
         
@@ -287,6 +317,15 @@ const toBytes32 = (id) => {
     console.log("\nAll done.");
     process.exit(0);
   } catch (err) {
+    /* The owner wallet cannot pay: one line, no stack. */
+    let shown = err;
+    if (shown && shown.code !== OWNER_FUNDS && funds && isInsufficientFunds(shown)) {
+      shown = await describeRefusedSend({ error: shown, ...funds, what: "this call" });
+    }
+    if (shown && shown.code === OWNER_FUNDS) {
+      console.error(`Error during oracle registration: ${shown.message}`);
+      process.exit(1);
+    }
     console.error("Error during oracle registration:", err);
     process.exit(1);
   }

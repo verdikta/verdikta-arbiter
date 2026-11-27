@@ -890,6 +890,36 @@ key raises a watchdog alert").
   before the template regeneration and the finality step, which keep it (the template sets
   the same 15m) and restart a running Chainlink only once it is in;
   `upgrade-chainlink-config-order.test.sh` runs the three in every combination of answers.
+- **The owner wallet's calls pay the network's gas price; do not write one into
+  `arbiter-operator/hardhat.config.js`.** It had 5 gwei for Base Sepolia and 1 gwei
+  for Base, and Hardhat sends a configured price as a legacy transaction that pays
+  all of it: with the network at 0.005 gwei, ten deregistrations cost 0.0088 ETH
+  and emptied the canary owner wallet half way through a job-count change
+  (2026-11-21). The networks now have `"auto"` (EIP-1559: base fee with room for
+  two full blocks, plus the last block's median tip), and
+  `VERDIKTA_GAS_PRICE_GWEI` pins a price for one command. The setting lives in the
+  config file itself because `configure-node.sh` and `deploy-contracts.sh` copy
+  that file alone into a build directory. `register-oracle-cl.js` checks the
+  wallet against the calls it is about to send (`scripts/lib/funds.js`) and stops
+  on a refusal for funds instead of retrying gas limits. A job change is checked
+  whole before its first deregistration: `upgrade-arbiter.sh` passes
+  `VA_DEREGISTER_THEN_REGISTER=<new count>` (10 when the count is still to be
+  asked), `unregister-oracle-cl.js --then-register` checks the deregistrations,
+  the registrations, their approval and the key authorization in
+  `runDeregistration`'s `beforeSend`, and exits 66, which the upgrade turns into
+  its `FAILED:` line. A send with no `gasLimit` gets the network's configured
+  `gas` (10,000,000 on Base Sepolia) and the node wants the wallet to hold that
+  much at the max fee, so give an owner-wallet call a limit of its own, as the
+  approval has. Tests: `hardhat-gas-price.test.cjs`, `owner-funds.test.cjs`,
+  `registry.test.js`.
+- **`arbiter-operator` has no lockfile, so a dependency range is what an install gets
+  that day.** Hardhat 2.30.0 (2026-11-24) needs Node 22: its native module's
+  platform package declares the engine, npm on Node 20 skips an optional
+  dependency like that silently, and `hardhat test` ends in "Cannot find native
+  binding" (`hardhat compile` still ran; the scripts on an HTTP network were not
+  tried). Operators are on Node 20.18, so `hardhat` is held at `>=2.23.0 <2.30.0`
+  (`hardhat-gas-price.test.cjs`); raise the bound only together with the Node
+  version the installer installs.
 - **`lsof -i:<port>` can be blind to the AI Node.** Next.js titles its process
   "next-server (v14.2.5)"; the kernel keeps 15 characters as comm,
   "next-server (v1", and lsof 4.93.2 (Ubuntu 20.04, the canary host) drops a
