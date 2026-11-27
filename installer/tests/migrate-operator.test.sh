@@ -201,7 +201,8 @@ grep -q "^PREVIOUS_OPERATOR_ADDR=\"$OLD\"$" "$T/install/installer/.contracts" &&
 grep -q "^OPERATOR_ADDR=\"$OLD\"" "$T/install/installer/.contracts.before-operator-migration" && grep -q "^OPERATOR_ADDR=$OLD" "$T/install/external-adapter/.env.before-operator-migration" && ok || bad "full: no backups of the repointed files"
 grep -q "$OTHER" "$REPO/installer/.contracts" && ok || bad "full: a checkout's .contracts for another node was changed"
 [ "$(grep -c JOB_ID "$T/install/installer/.contracts")" = "4" ] && grep -q "$J2" "$T/install/installer/.contracts" && ok || bad "full: the job ids changed"
-perm=$(stat -f '%Lp' "$T/install/external-adapter/.env" 2>/dev/null || stat -c '%a' "$T/install/external-adapter/.env")
+# GNU first: on Linux `stat -f` is the file system's status and succeeds.
+perm=$(stat -c '%a' "$T/install/external-adapter/.env" 2>/dev/null || stat -f '%Lp' "$T/install/external-adapter/.env")
 [ "$perm" = "600" ] && ok || bad "full: the adapter's .env is $perm, was 600"
 [ -z "$(state)" ] && ok || bad "full: the state file is still there: $(state)"
 ls "$T/install/installer/".operator-migration.done.*.json >/dev/null 2>&1 && ok || bad "full: no record of what was registered"
