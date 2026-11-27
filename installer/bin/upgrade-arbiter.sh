@@ -1171,10 +1171,13 @@ job_template_without_timeouts() {
 # job_template_preflight — the job template's question, settled before anything is stopped.
 # A template that differs in more than its timeouts means the installed jobs are not the ones
 # this release's adapter answers: they send no service credential, or lack the admission gates.
-# Regenerating them deregisters and re-registers the oracle on chain, so an unattended run does
-# it only when told to (VA_UPGRADE_REGENERATE_JOBS=y), and a node registered on separate classes
-# cannot do it here at all. Either of those found after stop-arbiter.sh left the node down; they
-# are found here, with the node running. Returns 1 with the reason printed.
+# Until 2026-11 that meant new jobs: new ids, a deregistration and a re-registration on chain,
+# and every job's reputation gone, for a change of a few task lines. The live jobs are now
+# replaced under their own ids after the restart (job-template.cjs, "Job template, after the
+# restart"), so there is nothing to refuse here. Regeneration is still there for whoever asks
+# for it (VA_UPGRADE_REGENERATE_JOBS=y, or yes at the prompt), and a node registered on
+# separate classes cannot do that one here: found after stop-arbiter.sh, that left the node
+# down, so it is found here, with the node running. Returns 1 with the reason printed.
 job_template_preflight() {
     local repo_job_spec="$REPO_CHAINLINK_NODE/basicJobSpec"
     local target_job_spec="$TARGET_CHAINLINK_NODE/basicJobSpec"
@@ -1190,32 +1193,48 @@ job_template_preflight() {
     if [ "$(job_template_without_timeouts "$repo_job_spec")" = "$(job_template_without_timeouts "$target_job_spec")" ]; then
         return 0
     fi
-    if [ -f "$TARGET_DIR/installer/.contracts" ] && ( source "$TARGET_DIR/installer/.contracts" >/dev/null 2>&1; [ "${REGISTRATION_SPLIT:-}" = "true" ] ); then
-        echo -e "${RED}The job template changed, and this node's jobs are registered on separate classes (REGISTRATION_SPLIT in installer/.contracts): the upgrade cannot regenerate them. Unregister them, run configure-node.sh from this checkout and register each class with VA_REGISTER_JOB_IDS, then upgrade.${NC}"
-        return 1
-    fi
-    if unattended_mode && [ "$(_va_yes_no_value "${VA_UPGRADE_REGENERATE_JOBS:-n}")" != "y" ]; then
-        echo -e "${RED}The job template changed: this release's adapter answers only jobs that send its service credential and check request authorization. Regenerating the jobs re-registers the oracle on chain, so an unattended upgrade does it only with VA_UPGRADE_REGENERATE_JOBS=y.${NC}"
+    if unattended_mode && [ "$(_va_yes_no_value "${VA_UPGRADE_REGENERATE_JOBS:-n}")" = "y" ] \
+       && [ -f "$TARGET_DIR/installer/.contracts" ] && ( source "$TARGET_DIR/installer/.contracts" >/dev/null 2>&1; [ "${REGISTRATION_SPLIT:-}" = "true" ] ); then
+        echo -e "${RED}VA_UPGRADE_REGENERATE_JOBS=y, and this node's jobs are registered on separate classes (REGISTRATION_SPLIT in installer/.contracts): the upgrade cannot regenerate them. Leave the answer out: the jobs are then updated under their own ids, with nothing to register.${NC}"
         return 1
     fi
     return 0
 }
 
-# Do this before stopping the installed node or replacing any services/jobs.
-# Legacy operators are not proxies: copying new Solidity cannot upgrade them.
-(
-    if [ ! -f "$TARGET_DIR/installer/.contracts" ]; then
-        echo "Error: cannot verify request authorization without installed contract configuration."
+# Which operator contract is this? Read before anything is stopped, on the chain the install
+# names (job-template.cjs mode; check-request-authorization.cjs holds the rules):
+#   v1      request authorization is in the contract; the jobs are the template as it is.
+#   legacy  a contract from before it. Until 2026-11 the upgrade refused such a node, which
+#           put every later fix behind a new contract, new job ids and a re-registration.
+#           It now goes on: after the restart each job is replaced under its own id by one
+#           that asks the ReputationKeeper about the requester before it calls the adapter.
+#           The contract itself is replaced by installer/bin/migrate-operator.sh, when the
+#           owner chooses to.
+# An RPC that does not answer is neither: the upgrade stops here, with the node running.
+OPERATOR_MODE_RC=0
+OPERATOR_MODE_JSON=$(REQUEST_AUTH_RPC_URLS="$RPC_HTTP_URLS" node "$UTIL_DIR/job-template.cjs" mode --install-dir "$TARGET_DIR") || OPERATOR_MODE_RC=$?
+if [ "$OPERATOR_MODE_RC" -ne 0 ]; then
+    echo -e "${YELLOW}Nothing was changed, and the arbiter was not stopped.${NC}"
+    exit 1
+fi
+export VERDIKTA_OPERATOR_MODE_JSON="$OPERATOR_MODE_JSON"
+case "$OPERATOR_MODE_JSON" in
+    *'"mode":"v1"'*)
+        echo -e "${GREEN}Operator request-authorization v1 verified.${NC}"
+        ;;
+    *'"mode":"legacy"'*)
+        LEGACY_KEEPER=$(printf '%s' "$OPERATOR_MODE_JSON" | sed -E 's/.*"keeper":"(0x[0-9a-fA-F]{40})".*/\1/')
+        echo -e "${YELLOW}This node's operator contract predates request authorization: it accepts a request from any address.${NC}"
+        echo -e "${YELLOW}The upgrade goes on. After the restart each job is replaced, under its own id, by one that asks the${NC}"
+        echo -e "${YELLOW}ReputationKeeper $LEGACY_KEEPER whether the requester is approved before it calls the adapter.${NC}"
+        echo -e "${YELLOW}Nothing happens on chain: job ids, registration, stake and reputation stay as they are.${NC}"
+        echo -e "${YELLOW}To put the check into the contract itself, run installer/bin/migrate-operator.sh when it suits you.${NC}"
+        ;;
+    *)
+        echo -e "${RED}Could not read the operator's description. Nothing was changed, and the arbiter was not stopped.${NC}"
         exit 1
-    fi
-    source "$TARGET_DIR/installer/.contracts"
-    case "$DEPLOYMENT_NETWORK" in
-        base_mainnet) AUTH_CHAIN_ID=8453 ;;
-        base_sepolia) AUTH_CHAIN_ID=84532 ;;
-        *) echo "Error: unsupported DEPLOYMENT_NETWORK for authorization preflight."; exit 1 ;;
-    esac
-    REQUEST_AUTH_RPC_URLS="$RPC_HTTP_URLS" node "$UTIL_DIR/check-request-authorization.cjs" "${OPERATOR_ADDR:-$OPERATOR_ADDRESS}" "$AUTH_CHAIN_ID"
-) || exit 1
+        ;;
+esac
 
 JOB_PREFLIGHT_RC=0
 job_template_preflight || JOB_PREFLIGHT_RC=$?
@@ -1361,14 +1380,18 @@ check_job_spec_template() {
             return 0
         fi
         echo -e "${YELLOW}The job specification template has been updated since your last installation.${NC}"
-        echo -e "${YELLOW}This may include timeout changes, new tasks, or other job improvements.${NC}"
-        
-        # Show the actual differences
+        echo -e "${BLUE}After the restart each live job is replaced by this release's, under its own job id${NC}"
+        echo -e "${BLUE}(job-template.cjs): nothing happens on chain, and registration, stake and reputation stay.${NC}"
+
+        # Show the actual differences (the templates hold placeholders, no credential)
         echo -e "${BLUE}Template differences found:${NC}"
         diff "$target_job_spec" "$repo_job_spec" || true
         echo
-        
-        if ask_yes_no "Would you like to regenerate the job specifications from the updated template? (This will require re-registration if you use an aggregator)" "y" VA_UPGRADE_REGENERATE_JOBS n; then
+
+        # Regeneration gives every job a new id: a deregistration, a re-registration and every
+        # job's reputation, for the same tasks. It is the old answer to a changed template and
+        # is kept for whoever asks for it; the default, attended or not, is the in-place update.
+        if ask_yes_no "Create new jobs with new job ids instead? (Not needed for this: it re-registers the oracle on chain and resets each job's reputation)" "n" VA_UPGRADE_REGENERATE_JOBS n; then
             # Handle the job spec regeneration with proper aggregator management. It reads
             # its own steps' exit codes: a function has no ERR trap, and errexit would end
             # the upgrade in silence with the arbiter stopped.
@@ -1381,17 +1404,7 @@ check_job_spec_template() {
                 JOB_REGEN_FAILED="job regeneration stopped (exit $REGEN_RC); see the messages above"
             fi
         else
-            # Declined at the prompt, with the arbiter already stopped: nothing has been
-            # replaced yet, so the upgrade ends and cleanup_on_error starts the arbiter again.
-            if ! grep -q 'headers=.*Authorization' "$target_job_spec"; then
-                echo -e "${RED}This security upgrade requires authenticated bridge jobs. Re-run with job regeneration enabled (VA_UPGRADE_REGENERATE_JOBS=y); existing jobs cannot call the secured adapter.${NC}"
-            else
-                # A name-only check misses removed edges or gates moved after work.
-                # Any changed template must be regenerated, even if it has headers.
-                echo -e "${RED}This security upgrade requires request authorization before the bridge and transaction. Regenerate the updated template with VA_UPGRADE_REGENERATE_JOBS=y.${NC}"
-            fi
-            cleanup_on_error
-            return 1
+            echo -e "${BLUE}Keeping the job ids: the jobs are updated in place after the restart.${NC}"
         fi
     else
         echo -e "${GREEN}Job specification template is up to date.${NC}"
@@ -1975,6 +1988,8 @@ for _util in \
     arbiter-boot-service.sh \
     arbiter-firewall.sh \
     apply-job-timeouts.sh \
+    job-template.cjs \
+    check-request-authorization.cjs \
     common-pin.js \
     code-review-sandbox.sh \
     code-review-check.js \
@@ -3216,6 +3231,55 @@ if [ -x "$TARGET_DIR/apply-chainlink-loopback.sh" ]; then
     fi
 fi
 
+# Job template, after the restart. A running job keeps the tasks it was created with, so each
+# live job is measured against this release's template here, on every upgrade, and a stale one
+# is replaced under its own job id (job-template.cjs: PUT /v2/jobs/:id, the old spec saved and
+# put back if the node does not show the new one). This is not asked: the adapter answers only
+# a job that sends its service credential, so a node whose jobs stay as they were answers
+# nothing. Which job is right depends on the operator contract (v1: the template; legacy: the
+# same tasks asking the ReputationKeeper), read before the stop and passed on in
+# VERDIKTA_OPERATOR_MODE_JSON. It runs before the timeouts step, which then finds this
+# release's limits already there, and at the top level of the script: a function has no ERR
+# trap. ERR-trap rule: `check` exits 1 on every node that still needs this, so exit codes are
+# read with `|| rc=$?`, never behind `set +e` (#97). A failure ends the upgrade with exit 3
+# and a last line saying so.
+if [ -f "$TARGET_DIR/job-template.cjs" ]; then
+    if [ "$SERVICES_STARTED_FOR_DOCTOR" != "1" ]; then
+        echo -e "${YELLOW}IMPORTANT: the arbiter was not started by this upgrade, so its live jobs were not measured against${NC}"
+        echo -e "${YELLOW}this release's job template. A job from an earlier release sends no credential the adapter accepts${NC}"
+        echo -e "${YELLOW}and answers nothing. Once the arbiter is running: node $TARGET_DIR/job-template.cjs check${NC}"
+        echo -e "${YELLOW}and, if it names a stale job: node $TARGET_DIR/job-template.cjs apply (same job ids, nothing on chain).${NC}"
+    else
+        JOB_TEMPLATE_CHECK_RC=0
+        REQUEST_AUTH_RPC_URLS="$RPC_HTTP_URLS" node "$TARGET_DIR/job-template.cjs" check --install-dir "$TARGET_DIR" --wait "${VERDIKTA_JOB_CHECK_WAIT:-180}" || JOB_TEMPLATE_CHECK_RC=$?
+        case "$JOB_TEMPLATE_CHECK_RC" in
+            0) ;;
+            1)
+                JOB_TEMPLATE_APPLY_RC=0
+                REQUEST_AUTH_RPC_URLS="$RPC_HTTP_URLS" node "$TARGET_DIR/job-template.cjs" apply --install-dir "$TARGET_DIR" || JOB_TEMPLATE_APPLY_RC=$?
+                case "$JOB_TEMPLATE_APPLY_RC" in
+                    0)
+                        JOB_TEMPLATE_RECHECK_RC=0
+                        REQUEST_AUTH_RPC_URLS="$RPC_HTTP_URLS" node "$TARGET_DIR/job-template.cjs" check --install-dir "$TARGET_DIR" || JOB_TEMPLATE_RECHECK_RC=$?
+                        if [ "$JOB_TEMPLATE_RECHECK_RC" != "0" ]; then
+                            JOB_TEMPLATE_FAILED="the jobs were replaced but the node still does not show this release's (exit $JOB_TEMPLATE_RECHECK_RC); run: node $TARGET_DIR/job-template.cjs check"
+                        fi
+                        ;;
+                    3)
+                        JOB_TEMPLATE_FAILED="a job was removed and could not be restored (job-template.cjs exit 3): its old spec is named above; POST it to the node, or that job id goes unanswered"
+                        ;;
+                    *)
+                        JOB_TEMPLATE_FAILED="the jobs were not all replaced (job-template.cjs exit $JOB_TEMPLATE_APPLY_RC); a job that was not sends no credential the adapter accepts, so it answers nothing. Run: node $TARGET_DIR/job-template.cjs apply"
+                        ;;
+                esac
+                ;;
+            *)
+                JOB_TEMPLATE_FAILED="the live jobs could not be measured against this release's template (job-template.cjs exit $JOB_TEMPLATE_CHECK_RC); a stale job answers nothing. Run: node $TARGET_DIR/job-template.cjs check, then apply"
+                ;;
+        esac
+    fi
+fi
+
 # Job timeouts, after the restart (design §11). A running job keeps the maxTaskDuration and
 # the bridge timeout it was created with, so each live job is measured here, on every
 # upgrade: one declined now is asked about again next time, which a template diff could not
@@ -3413,6 +3477,10 @@ echo "Thank you for using Verdikta Arbiter Node!"
 JOB_FOLLOWUP_FAILED=0
 if [ -n "${JOB_REGEN_FAILED:-}" ]; then
     echo -e "${RED}JOB REGENERATION FAILED: ${JOB_REGEN_FAILED}${NC}"
+    JOB_FOLLOWUP_FAILED=1
+fi
+if [ -n "${JOB_TEMPLATE_FAILED:-}" ]; then
+    echo -e "${RED}JOB UPDATE FAILED: ${JOB_TEMPLATE_FAILED}${NC}"
     JOB_FOLLOWUP_FAILED=1
 fi
 if [ -n "${JOB_TIMEOUTS_FAILED:-}" ]; then

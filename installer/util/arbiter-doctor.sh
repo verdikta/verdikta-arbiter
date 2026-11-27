@@ -387,6 +387,38 @@ check_chainlink_template() {
     esac
 }
 
+# The node's live jobs against this release's job template, and which operator contract they
+# are for (job-template.cjs check: reads the node's jobs and the chain, changes nothing). A
+# job that is not this release's sends no credential the adapter accepts, or has no
+# authorization gate: it answers nothing, so that is a FAIL, with the command that replaces
+# it under its own job id. An operator contract from before request authorization is not a
+# failure: its jobs ask the ReputationKeeper about each requester, and the WARN names the
+# migration. Only fixed text and a count are printed: a job's tasks hold the credential.
+check_job_template() {
+    local tool="$INSTALL_DIR/job-template.cjs" out rc=0 n
+    if [ ! -f "$tool" ] || ! command -v node >/dev/null 2>&1; then
+        emit INFO job.template "job-template.cjs not installed, or node is not on PATH" \
+             "Upgrade the arbiter to get it (installer/bin/upgrade-arbiter.sh)."
+        return
+    fi
+    out=$(node "$tool" check --install-dir "$INSTALL_DIR" 2>&1) || rc=$?
+    case "$rc" in
+        0) emit PASS job.template "every job is this release's" "" ;;
+        1) n=$(printf '%s\n' "$out" | grep -c '^  stale: ')
+           emit FAIL job.template "${n:-some} job(s) are not this release's: such a job sends no credential the adapter accepts, or has no authorization gate, and answers nothing" \
+                "List them: node $tool check ; replace them under their own job ids (nothing on chain): node $tool apply" ;;
+        *) emit INFO job.template "could not measure the jobs against the job template" \
+                "Details: node $tool check" ;;
+    esac
+    case "$out" in
+        *"predates request authorization"*)
+            emit WARN op.request_authorization "the operator contract predates request authorization: it admits any requester, and the jobs check each one with the ReputationKeeper" \
+                 "To put the check into the contract: installer/bin/migrate-operator.sh --check in the checkout (reads only), then without --check. Each job starts again with a new job's reputation." ;;
+        *"request authorization v1"*)
+            emit PASS op.request_authorization "the operator contract checks each requester itself (v1)" "" ;;
+    esac
+}
+
 # The txm.no_live_rpc_nodes hint: missing finality settings are the known cause
 # (July 2026, and the host that stayed CRITICAL after upgrading on 2026-11-09).
 no_live_rpc_hint() {
@@ -1609,6 +1641,7 @@ check_config
 check_services
 check_onchain
 check_chainlink_txm
+check_job_template
 check_external_adapter
 check_ai_node
 check_code_review

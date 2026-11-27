@@ -110,13 +110,36 @@ and malformed/reverting responses cannot grant it. Both request entry points
 require a version-2 request with requester = callback. The Chainlink job checks
 `isAuthorizedRequest` at `latest` before its bridge and again before `ethtx`;
 all fulfillment methods retain a final approval check. The adapted Operator is
-pinned to `@chainlink/contracts@1.4.0`; its exact diff is tested. Existing
-non-proxy operators require a new deployment and job migration, not just a
-software upgrade. See `docs/development/request-authorization.md`.
+pinned to `@chainlink/contracts@1.4.0`; its exact diff is tested. See
+`docs/development/request-authorization.md`.
 `installer/tests/job-timeouts.integration.sh` runs the job template on the real
 2.23.0 binary against this checkout's operator (credential, answer on chain, both
-gates, an answer after `EXPIRYTIME`); `arbiter-operator/test/support/job.js` is a
-model of it and proves nothing about Chainlink by itself.
+gates, an answer after `EXPIRYTIME`) and against a legacy one (the fixture
+`contracts/test/LegacyArbiterOperator.sol`: the in-place update, an unapproved
+requester stopped before the bridge, the migration's move of the jobs);
+`arbiter-operator/test/support/job.js` is a model of it and proves nothing about
+Chainlink by itself.
+
+**An operator deployed before that ("legacy") is not a proxy and cannot get the
+check, and its node takes every release all the same.** Until 2026-11-26 the
+upgrade refused such a node, and the first owner outside the canaries who was
+asked to upgrade got a seven-step manual migration back from their agent. Now
+`upgrade-arbiter.sh` reads which operator the node has before it stops anything
+(`job-template.cjs mode`; rules in `check-request-authorization.cjs`,
+`describe`) and goes on: a legacy node's jobs ask the ReputationKeeper
+`isContractApproved(requester)` at the template's two gates (three task lines
+differ, `legacyGate`), so an unapproved sender's run stops before the adapter,
+with nothing on chain. Replacing the contract is the owner's own step,
+`installer/bin/migrate-operator.sh` (`--check` reads only): deregister, wait
+out rounds in flight, deploy, carry the node keys over, repoint, move each job
+under its own id, register the same ids on the same classes and fee, verify. A
+registration is on (operator, job id), so a migrated job starts with a new
+job's reputation: that cost is why it is not part of an upgrade. "Legacy" is
+read only from a version call that *reverts* on a contract that answers
+`isReputationKeeperListEmpty()`; an RPC failure is never legacy. A legacy
+operator's keeper is its aggregator's, believed only if it holds a registration
+of one of the node's jobs (a stale `AGGREGATOR_ADDRESS` would make every job
+refuse the live dispatcher).
 
 Key files to trace this:
 - Job pipeline: `chainlink-node/basicJobSpec` (a `directrequest` template; `{...}` placeholders are filled at registration).
@@ -406,7 +429,9 @@ what an upgrade replaces. Operator notes: `installer/docs/maintenance/code-revie
 `--self-heal` starts what is down through `start-arbiter.sh`), `rotate-logs.sh` (app-log rotation),
 `arbiter-boot-service.sh` (start at boot, below), `arbiter-firewall.sh` and
 `apply-chainlink-loopback.sh` (port exposure, below),
-`regenerate-chainlink-config.sh` / `apply-chainlink-finality-tolerance.sh` (Chainlink config from the template, §8).
+`regenerate-chainlink-config.sh` / `apply-chainlink-finality-tolerance.sh` (Chainlink config from the template, §8),
+`job-template.cjs` (`node job-template.cjs check|apply`: this release's job template on the live
+jobs, under their own ids, §8).
 
 **The doctor's log text goes through `redact_log`.** Chainlink logs to stderr,
 with its RPC URLs whole and the provider keys in their paths; the doctor once
@@ -779,14 +804,43 @@ key raises a watchdog alert").
   `start-arbiter.sh` starts, until the next boot. `configure-service-auth.cjs`
   writes the two env files and each rendered job 0600 itself, and
   `apply-job-timeouts.sh` its saved specs; `credential-file-modes.test.sh` holds both.
-- **`upgrade-arbiter.sh` settles the job template's question before it stops
-  anything** (`job_template_preflight`): a template that differs in more than its
-  timeouts needs the jobs regenerated, which re-registers the oracle on chain, so
-  an unattended run does it only with `VA_UPGRADE_REGENERATE_JOBS=y` and a node
-  registered on separate classes cannot do it there at all; both are refused with
-  the node still running. `check_job_spec_template` runs after the stop and has no
-  `exit`: a decline at its prompt goes through `cleanup_on_error`, which starts the
-  arbiter again (`upgrade-regenerate-jobs-trap.test.sh`).
+- **A changed job template is applied to the live jobs under their own ids; it
+  does not make new jobs.** Each job id is a registration on the keeper with its
+  own stake and reputation, so new ids cost a deregistration, a re-registration
+  and the reputation, and until 2026-11-26 every template change did that (and an
+  unattended upgrade was refused without `VA_UPGRADE_REGENERATE_JOBS=y`). After its
+  restart the upgrade now runs `job-template.cjs check` and, on a stale job,
+  `apply`: the job this release wants is rendered from `basicJobSpec` for that
+  job's contract and chain, with the adapter's credential and the gate its
+  operator needs (§3), compared with the live `dotDagSource`, and put with
+  `PUT /v2/jobs/:id`; the old spec is saved 0600 and put back if the node does not
+  show the new one. It is not asked: a job without the credential answers nothing.
+  A failure is `JOB UPDATE FAILED:` and exit 3. `VA_UPGRADE_REGENERATE_JOBS=y`
+  still regenerates (the question defaults to no); `job_template_preflight` then
+  refuses a node registered on separate classes before the stop.
+  `check_job_spec_template` runs after the stop and has no `exit`
+  (`upgrade-regenerate-jobs-trap.test.sh`, `upgrade-job-template-trap.test.sh`).
+  The tool decodes the template's TOML string itself (the hosts' Python 3.8 has no
+  tomllib); `job-template.test.cjs` holds it to tomllib, with a fake node that
+  parses every spec it is sent with tomllib too, and
+  `job-timeouts.integration.sh` shows on the 2.23.0 binary that a job created from
+  the template reads as current and that `check` after `apply` is clean. A job on
+  another contract than `installer/.contracts` names is moved only with
+  `--move-to-operator` (the migration). A job's tasks hold the credential: the
+  tool, the doctor's `job.template` and the tests print none of them.
+- **Through Hardhat's provider a contract's revert is a `ProviderError` with code
+  3, not ethers' `CALL_EXCEPTION`.** The registration scripts run on it, so a
+  check for the ethers code alone took a legacy operator's missing function for
+  an RPC failure (found by running against a mainnet operator, 2026-11-26;
+  Hardhat's local network had passed it). `contractRefused`
+  (`arbiter-operator/scripts/lib/request-authorization.js`) reads both. A script
+  that tells "the contract refused" from "the call failed" is tried against a
+  real chain, read-only, before it is believed.
+- **A test's stub must not be driven by a variable the script under test also
+  sets.** `migrate-operator.sh` has `PLAN_RC=0` and the like; a `PLAN_RC=1` given
+  to the test's stub in the environment was overwritten for the stub too
+  (assigning an exported variable changes what a child sees), so a case that
+  should have refused ran on. Stub settings are `STUB_*`.
 - `set -e` is used in installer scripts — check exit codes carefully when editing.
 - **`upgrade-arbiter.sh` also has `trap cleanup_on_error ERR`, and the ERR trap
   fires on any failing plain command whether or not errexit is on.** So
@@ -829,9 +883,9 @@ key raises a watchdog alert").
 - **A job spec and a Chainlink config change reach no running node by themselves.** A job
   keeps the `maxTaskDuration` and DAG it was created with, and the upgrade's copy overwrites
   the installed template, so a template diff never asks twice. Anything a live job must have
-  is measured from `GET /v2/jobs`, as `installer/util/apply-job-timeouts.sh` does for the 840 s
-  limits, and replaced with `PUT /v2/jobs/:id`, keeping `externalJobID` so nothing happens on
-  chain. `job-timeouts.integration.sh` runs this against the real 2.23.0 binary in CI
+  is measured from `GET /v2/jobs`, as `installer/util/job-template.cjs` does for the whole
+  job and `apply-job-timeouts.sh` for the 840 s limits, and replaced with
+  `PUT /v2/jobs/:id`, keeping `externalJobID` so nothing happens on chain. `job-timeouts.integration.sh` runs this against the real 2.23.0 binary in CI
   (`installer.yml`). The image is linux/amd64 only. The upgrade writes `MaxRunDuration`
   before the template regeneration and the finality step, which keep it (the template sets
   the same 15m) and restart a running Chainlink only once it is in;
@@ -869,7 +923,8 @@ key raises a watchdog alert").
 | Which form of an attachment does a juror get? | `ai-node/src/lib/attachments/pdfRouting.ts`, `normalizeImages.ts`, `ai-node/src/lib/llm/pdf-support.ts`, `ai-node/src/utils/attachment-processor.ts` |
 | Commit-reveal / IPFS upload | `external-adapter/src/handlers/evaluateHandler.js`, `services/commitStore.js` |
 | On-chain fulfillment/access control | `arbiter-operator/contracts/ArbiterOperator.sol` |
-| Chainlink job pipeline | `chainlink-node/basicJobSpec`, `installer/bin/register-oracle-dispatcher.sh` |
+| Chainlink job pipeline | `chainlink-node/basicJobSpec`, `installer/util/job-template.cjs` (the template on live jobs, the legacy gate), `installer/bin/register-oracle-dispatcher.sh` |
+| Which operator contract a node has, and moving to a new one | `installer/util/check-request-authorization.cjs` (`describe`), `installer/bin/migrate-operator.sh`, `arbiter-operator/scripts/lib/migration.js` |
 | Manifest format | `external-adapter/doc/MANIFEST_SPECIFICATION.md`, `external-adapter/doc/multi-cid-implementation.md` |
 | AI response contract | `ai-node/API_RESPONSE_SPECIFICATION.md` |
 | Install/upgrade | `installer/bin/install.sh`, `installer/bin/upgrade-arbiter.sh`, `installer/docs/` |

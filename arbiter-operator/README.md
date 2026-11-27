@@ -7,8 +7,12 @@ sender and the configured ReputationKeeper allow-list. Empty lists deny access.
 The job rechecks the exact pending request before the adapter and transaction,
 and every fulfillment method checks approval again.
 
-**Migration requires a new operator deployment and regenerated Chainlink jobs.**
-Existing operators are not proxies. See the [authorization and migration guide](../docs/development/request-authorization.md)
+**An operator deployed before this cannot get the check: it is not a proxy.** Its node
+still takes every release (its jobs then ask the ReputationKeeper about each requester),
+and `installer/bin/migrate-operator.sh` moves the node to a new deployment of this
+contract, keeping its job ids, when the owner chooses. `contracts/test/LegacyArbiterOperator.sol`
+is that earlier contract, kept as a test fixture and never deployed. See the
+[authorization and migration guide](../docs/development/request-authorization.md)
 and the [pinned Operator adaptation](contracts/vendor/README.md).
 
 ## Solidity Version Compatibility

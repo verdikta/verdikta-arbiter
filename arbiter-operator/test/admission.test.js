@@ -210,4 +210,104 @@ describe('ArbiterOperator admission (local ERC-677 integration)', function () {
     await assert.rejects(() => ensureRequestAuthorization(options), /not approved/);
     await assert.rejects(() => ensureRequestAuthorization({ ...options, operator: requester }), /Deploy the hardened operator/);
   });
+
+  // An operator deployed before request authorization (contracts/test/LegacyArbiterOperator.sol).
+  // Its node still takes this release: the contract admits anyone, so the job asks the keeper.
+  describe('a legacy operator, guarded by its jobs', () => {
+    const { describeOperator } = require('../../installer/util/check-request-authorization.cjs');
+    const { expectedJob } = require('../../installer/util/job-template.cjs');
+    const template = require('node:fs').readFileSync(require('node:path').join(__dirname, '../../chainlink-node/basicJobSpec'), 'utf8');
+    let legacy, dag;
+    beforeEach(async () => {
+      legacy = await (await ethers.getContractFactory('LegacyArbiterOperator')).deploy(await link.getAddress());
+      await legacy.waitForDeployment();
+      await legacy.setAuthorizedSenders([node.address]);
+      dag = expectedJob(template, { operator: legacy.target, chainId: 31337, token: 'a'.repeat(64), mode: 'legacy', keeper: keeper.target }).dag;
+    });
+    async function sendLegacy(caller) {
+      const data = legacy.interface.encodeFunctionData('operatorRequest',
+        [ethers.ZeroAddress, 999, job, caller.interface.getFunction('fulfill').selector, nonce++, 2, '0x']);
+      const receipt = await (await caller.request(link.target, legacy.target, 0, data)).wait();
+      return receipt.logs.map(log => { try { return legacy.interface.parseLog(log); } catch { return null; } })
+        .find(log => log?.name === 'OracleRequest').args;
+    }
+    const run = (event, extra = {}) => runJob({ event, op: legacy, ethers, dag, gate: keeper.target, ...extra });
+
+    it('the contract admits an unapproved requester, and the job stops before the bridge', async () => {
+      assert.equal(await legacy.isReputationKeeperListEmpty(), true);
+      // What the hardened contract refuses on chain: an OracleRequest from a contract no keeper approved.
+      const anonymous = await sendLegacy(stranger);
+      assert.equal(anonymous.requester, stranger.target);
+      assert.deepEqual(await run(anonymous), { bridge: 0, transaction: 0 });
+      // The template's own job is no guard there: the legacy contract has no isAuthorizedRequest.
+      assert.deepEqual(await runJob({ event: anonymous, op: legacy, ethers }), { bridge: 0, transaction: 0 });
+    });
+    it('an approved requester is served; revocation, also after the bridge, and an RPC failure stop the job', async () => {
+      await keeper.setApproved(requester.target, true);
+      const event = await sendLegacy(requester);
+      assert.deepEqual(await run(event), { bridge: 1, transaction: 1 });
+      assert.deepEqual(await run(event, { rpcFailure: true }), { bridge: 0, transaction: 0 });
+      assert.deepEqual(await run(event, { bridge: () => keeper.setApproved(requester.target, false) }), { bridge: 1, transaction: 0 });
+      assert.deepEqual(await run(event), { bridge: 0, transaction: 0 });
+      // The requester in the event is the address the token saw, whatever the payload claims.
+      const data = legacy.interface.encodeFunctionData('operatorRequest',
+        [requester.target, 999, job, stranger.interface.getFunction('fulfill').selector, nonce++, 2, '0x']);
+      const receipt = await (await stranger.request(link.target, legacy.target, 0, data)).wait();
+      const forged = receipt.logs.map(log => { try { return legacy.interface.parseLog(log); } catch { return null; } })
+        .find(log => log?.name === 'OracleRequest').args;
+      assert.equal(forged.requester, stranger.target);
+      await keeper.setApproved(requester.target, true);
+      assert.deepEqual(await run(forged), { bridge: 0, transaction: 0 });
+    });
+    it('a keeper that reverts, hangs or answers nonsense opens nothing', async () => {
+      await keeper.setApproved(requester.target, true);
+      const event = await sendLegacy(requester);
+      for (const mode of [1, 2, 3, 5, 6]) {
+        await keeper.setMode(mode);
+        assert.deepEqual(await run(event), { bridge: 0, transaction: 0 }, `keeper mode ${mode}`);
+      }
+      await keeper.setMode(0);
+      assert.deepEqual(await run(event), { bridge: 1, transaction: 1 });
+    });
+    it('both jobs keep every result an ethabidecode is read for', async () => {
+      const tasks = readJob(dag);
+      assert.equal(tasks.get('authorize_call').contract, keeper.target);
+      assert.equal(tasks.get('reauthorize_call').contract, keeper.target);
+      assert.equal(tasks.get('authorize_data').abi, 'isContractApproved(address contractAddress)');
+      // Everything else is the template's: same tasks, same edges.
+      const base = readJob();
+      assert.deepEqual([...tasks.keys()], [...base.keys()]);
+      for (const [name, task] of tasks) {
+        assert.deepEqual(task.parents, base.get(name).parents, name);
+        if (!['authorize_data', 'authorize_call', 'reauthorize_call'].includes(name)) assert.equal(task.type, base.get(name).type, name);
+      }
+    });
+    it('the installer tells it from a v1 operator, and registration accepts it without touching its keeper list', async () => {
+      const rpc = async (_url, init) => {
+        const request = JSON.parse(init.body);
+        try {
+          const result = await network.provider.send(request.method, request.params);
+          return { ok: true, json: async () => ({ jsonrpc: '2.0', id: request.id, result }) };
+        } catch (error) {
+          return { ok: true, json: async () => ({ jsonrpc: '2.0', id: request.id, error: { code: 3, message: 'execution reverted' } }) };
+        }
+      };
+      const chainId = 84532;
+      const chain = async (url, init) => JSON.parse(init.body).method === 'eth_chainId'
+        ? { ok: true, json: async () => ({ jsonrpc: '2.0', id: JSON.parse(init.body).id, result: '0x14a34' }) } : rpc(url, init);
+      const base = { chainId, rpcUrls: 'http://local.invalid', fetchImpl: chain };
+      assert.deepEqual(await describeOperator({ ...base, operator: op.target }), { mode: 'v1' });
+      // The keeper is the aggregator's; this fixture is both, as AdmissionKeeper has no reputationKeeper().
+      await assert.rejects(() => describeOperator({ ...base, operator: legacy.target }), /names no aggregator/);
+      await assert.rejects(() => describeOperator({ ...base, operator: legacy.target, aggregator: requester.target, allowUnregistered: true }),
+        /names no ReputationKeeper/);
+      const options = { operator: legacy, keeper, keeperAddress: keeper.target, aggregatorAddress: requester.target,
+        signerAddress: owner.address, log: () => {} };
+      await assert.rejects(() => ensureRequestAuthorization(options), /not approved/);
+      await keeper.setApproved(requester.target, true);
+      await ensureRequestAuthorization(options);
+      assert.equal(await legacy.isReputationKeeperListEmpty(), true);
+      assert.equal((await legacy.queryFilter(legacy.filters.ReputationKeeperAdded())).length, 0);
+    });
+  });
 });

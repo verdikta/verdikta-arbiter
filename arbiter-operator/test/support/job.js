@@ -4,9 +4,11 @@ const path = require('node:path');
 // Parse the actual TOML and DOT string escaping, not a second handwritten job.
 // This narrow offline harness models task error propagation checked against
 // Chainlink 2.23.0. It is not a replacement for a Chainlink testnet canary.
-function readJob() {
+// `dag`: a job's tasks as the node holds them (installer/util/job-template.cjs, expectedJob),
+// for a job that is not the template as it is: the legacy operator's.
+function readJob(dag) {
   const filename = path.join(__dirname, '../../../chainlink-node/basicJobSpec');
-  const source = execFileSync('python3', ['-c',
+  const source = dag !== undefined ? dag : execFileSync('python3', ['-c',
     'import tomllib,sys; print(tomllib.load(open(sys.argv[1],"rb"))["observationSource"])', filename], { encoding: 'utf8' });
   const tasks = new Map();
   for (const match of source.matchAll(/\b(\w+)\s*\[((?:"(?:\\.|[^"\\])*"|[^\]"])*)\]/g)) {
@@ -35,8 +37,9 @@ function decodeArgs(abi) {
   });
 }
 
-async function runJob({ event, op, ethers, bridge = async () => {}, rpcFailure = false }) {
-  const tasks = readJob(), results = new Map();
+// `dag` and `gate`: the legacy job, whose two reads go to the ReputationKeeper at `gate`.
+async function runJob({ event, op, ethers, bridge = async () => {}, rpcFailure = false, dag, gate }) {
+  const tasks = readJob(dag), results = new Map();
   const effects = { bridge: 0, transaction: 0 };
   const variable = expression => expression.slice(2, -1).split('.').reduce((value, key) => value?.[key], Object.fromEntries(results));
   const values = expression => JSON.parse(expression.replace(/\$\([^)]+\)/g, value => JSON.stringify(String(variable(value)))));
@@ -53,16 +56,21 @@ async function runJob({ event, op, ethers, bridge = async () => {}, rpcFailure =
           if (name === 'authorize_data') {
             const iface = new ethers.Interface([`function ${task.abi} view returns (bool)`]);
             const input = values(task.data);
-            value = iface.encodeFunctionData('isAuthorizedRequest', iface.fragments[0].inputs.map(arg => input[arg.name]));
+            value = iface.encodeFunctionData(iface.fragments[0].name, iface.fragments[0].inputs.map(arg => input[arg.name]));
           }
           break;
         case 'ethcall':
           if (rpcFailure) throw new Error('RPC unavailable');
-          if (task.contract !== '{CONTRACT_ADDRESS}' || task.block !== 'latest') throw new Error('Unexpected gate target/state');
-          value = await ethers.provider.call({ to: op.target, data: variable(task.data), gasLimit: BigInt(task.gas) });
+          if (task.contract !== (gate || '{CONTRACT_ADDRESS}') || task.block !== 'latest') throw new Error('Unexpected gate target/state');
+          value = await ethers.provider.call({ to: gate || op.target, data: variable(task.data), gasLimit: BigInt(task.gas) });
           break;
         case 'ethabidecode': {
           const args = decodeArgs(task.abi);
+          // go-ethereum's readBool takes 0 and 1 only ("improperly encoded boolean value"); ethers takes any word.
+          const raw = String(variable(task.data));
+          args.forEach((arg, i) => {
+            if (arg.type === 'bool' && BigInt(`0x${raw.slice(2 + 64 * i, 66 + 64 * i) || 'ff'}`) > 1n) throw new Error('abi: improperly encoded boolean value');
+          });
           const decoded = ethers.AbiCoder.defaultAbiCoder().decode(args.map(arg => arg.type), variable(task.data));
           value = Object.fromEntries(args.map((arg, i) => [arg.name, decoded[i]]));
           break;

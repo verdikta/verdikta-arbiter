@@ -180,32 +180,36 @@ If accepted, a full directory backup is created with timestamp suffix:
 
 ### Job template change detection
 
-Before component replacement, the script compares:
+A running Chainlink job keeps the tasks it was created with, so a changed
+`chainlink-node/basicJobSpec` reaches no node by itself. After the restart the upgrade
+measures each live job against the job this release wants and replaces a stale one **under
+its own job id** (`job-template.cjs`: `PUT /v2/jobs/:id`, the old spec saved 0600 under
+`chainlink-node/jobs/replaced/` and put back if the node does not show the new one).
+Nothing happens on chain: registration, stake and reputation stay. It is not asked, because
+the adapter answers only a job that sends its service credential.
 
-- repo template: `chainlink-node/basicJobSpec`
-- installed template: `<install-dir>/chainlink-node/basicJobSpec`
+Until late November 2026 a changed template meant new jobs with new ids: a deregistration,
+a re-registration and each job's reputation, and an unattended upgrade was refused without
+`VA_UPGRADE_REGENERATE_JOBS=y`. That path is still there for whoever asks (the question
+defaults to no, attended and unattended); a node whose jobs are registered on separate
+classes (`REGISTRATION_SPLIT`) cannot take it and is told so before anything is stopped. If
+you do ask for it and an aggregator registration exists, it unregisters, regenerates the
+jobs (`configure-node.sh`) and re-registers; a failure there ends the upgrade on exit 3
+with `JOB REGENERATION FAILED:` naming the step, the services restarted.
 
-If changed, it offers to regenerate jobs from the new template.
+If the in-place update does not land, the upgrade finishes and exits 3 with
+`JOB UPDATE FAILED:` on the last line. A job that was not replaced answers nothing, so act
+on it:
 
-The service-authentication upgrade requires this regeneration when the installed
-template lacks the Authorization header. An unattended upgrade without
-`VA_UPGRADE_REGENERATE_JOBS=y`, and a node whose jobs are registered on separate
-classes (`REGISTRATION_SPLIT`), are refused before anything is stopped; declining
-at the prompt ends the upgrade and starts the arbiter again, with nothing replaced. Drain
-in-flight requests first: job IDs change, and pending commits remain in memory.
-The upgrade synchronizes separate EA/AI credentials and renders private job
-files. See [service authentication](../../../docs/development/service-authentication.md)
-for credential rotation, network restrictions and the class-5555 deployment checks.
+```bash
+node ~/verdikta-arbiter-node/job-template.cjs check   # 0 this release's, 1 stale (each named), 2 could not measure
+node ~/verdikta-arbiter-node/job-template.cjs apply   # replace stale jobs under their own ids
+```
 
-If you accept and an aggregator registration exists, it attempts:
-
-1. Unregister oracle
-2. Regenerate jobs (`configure-node.sh`)
-3. Re-register oracle with new job IDs
-
-A failure at any of these no longer ends the upgrade with the node down. The upgrade
-finishes, restarts the services, and exits 3 with `JOB REGENERATION FAILED:` naming the step.
-A template that differs only in the two job timeouts does not ask at all (next section).
+The upgrade synchronizes separate EA/AI credentials. See
+[service authentication](../../../docs/development/service-authentication.md)
+for credential rotation (a rotated credential makes every job stale: `apply` again),
+network restrictions and the class-5555 deployment checks.
 
 ### Job timeouts (840 s)
 
@@ -743,13 +747,36 @@ Then verify:
 - If aggregator registration exists and jobs are regenerated, expect unregister/re-register flow.
 - If you skip optional model downloads, you can pull Ollama models later.
 
-### Request-authorization migration
+### An operator contract from before request authorization
 
-The admission fix requires a **new ArbiterOperator deployment and regenerated
-jobs**. Existing contracts are not proxies; copying new Solidity does not change
-on-chain admission. The upgrade checks the installed operator on its configured
-chain before stopping services and refuses legacy operators or unverifiable
-RPC responses. Changed job templates must be regenerated, including both the
-pre-bridge and pre-transaction authorization gates. Follow
-[the migration guide](../../../docs/development/request-authorization.md), drain
-pending requests, and pass the class-5555 testnet canary before mainnet.
+An ArbiterOperator deployed before 2026-11-19 accepts a request from any address, and it
+is not a proxy: the check that refuses an unapproved requester cannot be added to it.
+**You do not have to replace it to upgrade.** The upgrade reads which contract the node has
+before it stops anything and, on an old one, goes on: after the restart each job is
+replaced under its own job id by one that asks the ReputationKeeper whether the requester
+is approved before it calls the adapter. Nothing happens on chain. `arbiter-doctor.sh` then
+shows `op.request_authorization` as WARN.
+
+Replacing the contract is a separate step, yours to schedule:
+
+```bash
+cd ~/verdikta-arbiter                            # this checkout
+installer/bin/migrate-operator.sh --check        # reads the chain and the node; sends nothing
+installer/bin/migrate-operator.sh                # unattended: --unattended with VA_MIGRATE_OPERATOR=y
+```
+
+It deregisters the node's jobs, waits out rounds in flight, deploys the new contract,
+carries the node's keys over, points the node at it, moves each job under its own id,
+registers the same job ids on the same classes at the same fee, and verifies the result.
+Run it again after a failure: it continues from where it stopped, and says how to go back.
+
+- **Cost:** gas for one deployment and two transactions per job. The stake comes back and
+  goes in again. The node answers nothing while it runs; the wait for rounds in flight alone
+  is six minutes.
+- **Reputation:** a registration is on (operator contract, job id). The job ids are kept,
+  the contract is new, so each job starts with a new job's reputation. On mainnet, weigh
+  that; on testnet it does not matter.
+- **Class 5555** is reserved for the release canaries. Keep the classes you have.
+
+The full account is in
+[the request-authorization notes](../../../docs/development/request-authorization.md).

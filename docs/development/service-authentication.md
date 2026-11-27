@@ -55,14 +55,18 @@ attribute and protects rendered job files with mode 0600. This is supported by
 the pinned [Chainlink 2.23.0 bridge task](https://github.com/smartcontractkit/chainlink/blob/v2.23.0/core/services/pipeline/task.bridge.go).
 Do not assume Chainlink automatically sends its bridge `outgoingToken`.
 
-Existing jobs need the new Authorization header. The first security upgrade
-must regenerate jobs; if a changed template is not regenerated, the upgrade
-aborts. The request-authorization fix also requires a new operator deployment;
-see [migration guidance](request-authorization.md). For unattended upgrades, explicitly set
-`VA_UPGRADE_REGENERATE_JOBS=y`. The existing regeneration workflow replaces job
-IDs and handles oracle re-registration. An old duplicate job is never accepted
-as a successfully authenticated replacement. Missing job templates also abort.
-Custom jobs must be updated to the equivalent header and payload before use.
+Existing jobs need the new Authorization header. After its restart the upgrade
+measures each live job against this release's template and replaces a stale one
+under its own job id (`installer/util/job-template.cjs`: `PUT /v2/jobs/:id`), so
+nothing happens on chain and no answer is needed; a job it could not replace
+ends the upgrade with exit 3 and `JOB UPDATE FAILED:`, because such a job
+answers nothing. Until 2026-11-26 the jobs were regenerated instead, with new
+job IDs and an on-chain re-registration (`VA_UPGRADE_REGENERATE_JOBS=y`, still
+available, default no). A node on an operator from before request authorization
+is upgraded like any other; replacing that contract is a separate step
+([request authorization](request-authorization.md)). A rotated `EA_API_TOKEN`
+makes every job stale: run `node job-template.cjs apply`. Missing job templates
+abort. Custom jobs must be updated to the equivalent header and payload before use.
 
 Drain in-flight requests before restarting or regenerating jobs. The commit
 store remains in memory; restarting loses pending results. Old entries without

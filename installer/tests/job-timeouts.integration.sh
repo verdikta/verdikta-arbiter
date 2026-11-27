@@ -15,6 +15,12 @@
 #              the adapter is called with the job's bearer header, the answer lands on
 #              chain; a requester revoked before the run costs no bridge call, one revoked
 #              during it no transaction, and an answer after EXPIRYTIME still lands.
+#              An operator from before request authorization (the fixture
+#              LegacyArbiterOperator): what its node answers before the upgrade, then
+#              job-template.cjs replacing its jobs under their ids by jobs that ask the
+#              keeper, which serve an approved requester and stop an unapproved one before
+#              the bridge; and the migration's move of those jobs to this checkout's
+#              operator, where they answer again. Needs node (20).
 #   JOB_TIMEOUTS_FULL=1   adds the real scale: a bridge call of 660 s, past the old
 #              300 s and past the 10 m default, on two nodes side by side (12 minutes):
 #              one on the default config, cut at 600 s, one on the template, answered.
@@ -375,6 +381,40 @@ def answered_twice_after_replace(node, path, contract, ext, agg):
     time.sleep(60)
     return len(answers(path, agg))
 
+# ── job-template.cjs on a live node, with an install's own files beside it ───
+JOB_TEMPLATE_TOOL = os.path.join(ROOT, 'util', 'job-template.cjs')
+INSTALL = os.path.join(work, 'install')
+def write_install(operator, job_ids):
+    """What the tool reads of an install: the operator and jobs, the network, the adapter's credential, the template."""
+    for d in ('installer', 'external-adapter', 'chainlink-node'):
+        os.makedirs(os.path.join(INSTALL, d), exist_ok=True)
+    lines = [f'OPERATOR_ADDR="{operator}"', f'AGGREGATOR_ADDRESS="{CHAIN["consumer"]}"']
+    lines += [f'JOB_ID_{i + 1}_NO_HYPHENS="{ext.replace("-", "")}"' for i, ext in enumerate(job_ids)]
+    open(os.path.join(INSTALL, 'installer', '.contracts'), 'w').write('\n'.join(lines) + '\n')
+    open(os.path.join(INSTALL, 'installer', '.env'), 'w').write('DEPLOYMENT_NETWORK="base_sepolia"\n')
+    open(os.path.join(INSTALL, 'external-adapter', '.env'), 'w').write(f'EA_API_TOKEN={EA_TOKEN}\n')
+    open(os.path.join(INSTALL, 'chainlink-node', 'basicJobSpec'), 'w').write(JOB_TEMPLATE)
+
+def job_template(node, mode, *args):
+    """The real tool against the real node. The operator's description is given: the tool reads it
+    on Base only, and this chain is anvil's (the read itself: job-template.test.cjs and a real keeper)."""
+    env = {**os.environ, 'VERDIKTA_CHAINLINK_URL': node.url, 'VERDIKTA_CHAINLINK_API_FILE': node.api_path,
+           'VERDIKTA_OPERATOR_MODE_JSON': json.dumps(mode), 'VERDIKTA_JOB_BACKUP_DIR': os.path.join(node.dir, 'replaced')}
+    r = subprocess.run(['node', JOB_TEMPLATE_TOOL, *args, '--install-dir', INSTALL], capture_output=True, text=True, env=env, timeout=300)
+    return r.returncode, r.stdout + r.stderr
+
+def old_job(node, i, contract):
+    """A job as nodes ran it before service authentication and request authorization: no header, no gate."""
+    text = render_job(node, i, contract)
+    text = re.sub(r'\n    authorize_data \[.*?\n    authorize \[[^\n]*\n', '\n', text, flags=re.S)
+    text = re.sub(r'\n    reauthorize_call \[.*?\n    reauthorize \[[^\n]*\n', '\n', text, flags=re.S)
+    text = re.sub(r'\n\s*headers="[^\n]*', '', text)
+    text = text.replace('decode_log -> authorize_data -> authorize_call -> authorize_result -> authorize -> decode_cbor', 'decode_log -> decode_cbor')
+    text = text.replace('encode_tx -> reauthorize_call -> reauthorize_result -> reauthorize -> submit_tx', 'encode_tx -> submit_tx')
+    if 'authorize' in text or 'Authorization' in text:
+        raise RuntimeError('the old job still holds a gate or a header: the template changed, look at old_job again')
+    return text
+
 # ── The run ──────────────────────────────────────────────────────────────────
 def main():
     sh('docker', 'network', 'create', RUN)
@@ -483,6 +523,94 @@ def main():
     emit_request(contract, gate_ext, 'gateLate')
     ok('an answer after EXPIRYTIME: the bridge was called', wait_answer('/a', 'gateLate'))
     ok('and it lands on chain', wait_fulfillments(had + 1) >= had + 1, f'fulfillments {had} -> {fulfillments()}')
+
+    print('\n== this release\'s template on live jobs: nothing to do where the jobs are already it ==')
+    if shutil.which('node') is None:
+        raise RuntimeError('node is required for job-template.cjs')
+    write_install(contract, [ext, gate_ext])
+    V1 = {'mode': 'v1'}
+    rc, out = job_template(a, V1, 'check')
+    # Job 2 was created from the template as configure-node.sh creates it, job 1 was replaced by
+    # apply-job-timeouts.sh: both must read as this release's, or every upgrade would replace every job.
+    ok('a job created from the template and one replaced for its timeouts are this release\'s', rc == 0 and 'All 2 job(s)' in out, f'rc={rc}: {out[-400:]}')
+    rc, out = job_template(a, V1, 'apply')
+    ok('and apply replaces nothing', rc == 0 and 'Nothing to replace' in out, f'rc={rc}: {out[-300:]}')
+
+    print('\n== an operator from before request authorization: its node before the upgrade ==')
+    legacy = deploy('LegacyArbiterOperator.sol', 'LegacyArbiterOperator', 'constructor(address)', CHAIN['link'])
+    l = Node('l', render_config())
+    send(legacy, 'setAuthorizedSenders(address[])', '[' + l.key + ']')
+    l.add_bridge('verdikta-ai', EA_URL + '/l')
+    first = l.add_job(old_job(l, 1, legacy))
+    second = l.add_job(old_job(l, 2, legacy))
+    lext, lext2 = first['attributes']['externalJobID'], second['attributes']['externalJobID']
+    ok('the legacy operator has no request authorization', sh('docker', 'exec', f'{RUN}-anvil', 'cast', 'call', '--rpc-url', 'http://localhost:8545',
+       legacy, 'requestAuthorizationVersion()(uint256)', check=False).returncode != 0)
+    approve(False)
+    emit_request(legacy, lext, 'legacyOpen')   # no revert: this contract admits anyone
+    ok('before: a requester no keeper approves is admitted on chain and reaches the adapter', wait_answer('/l', 'legacyOpen'))
+    if answers('/l', 'legacyOpen'):
+        ok('before: with no credential', answers('/l', 'legacyOpen')[0]['auth'] is None)
+    approve(True)
+
+    print('\n== the upgrade\'s in-place update: the same job ids, now asking the keeper ==')
+    write_install(legacy, [lext, lext2])
+    LEGACY = {'mode': 'legacy', 'keeper': CHAIN['keeper']}
+    rc, out = job_template(l, LEGACY, 'check')
+    ok('check: both jobs are stale, named, for the missing credential', rc == 1 and 'Verdikta AI Arbiter 1' in out and 'Verdikta AI Arbiter 2' in out
+       and 'sends no service credential' in out, f'rc={rc}: {out[-400:]}')
+    rc, out = job_template(l, LEGACY, 'apply')
+    ok('apply: both replaced', rc == 0 and 'Replaced 2 job(s)' in out, f'rc={rc}: {out[-400:]}')
+    ok('no line of the tool holds the credential', EA_TOKEN not in out)
+    rc, out = job_template(l, LEGACY, 'check')
+    ok('check after apply: what the node holds is what the tool expects, byte for byte', rc == 0 and 'All 2 job(s)' in out, f'rc={rc}: {out[-400:]}')
+    after = l.job_by_ext(lext)
+    ok('the job id is kept', after is not None and l.job_by_ext(lext2) is not None)
+    if after is not None:
+        dag = after['attributes']['pipelineSpec']['dotDagSource']
+        ok('it listens on the same contract', after['attributes']['directRequestSpec']['contractAddress'].lower() == legacy.lower())
+        ok('its two reads go to the keeper', dag.count(f'contract="{CHAIN["keeper"]}"') == 2 and 'isContractApproved(address contractAddress)' in dag)
+        ok('and its transaction still goes to the operator', f'to="{legacy}"' in dag)
+    saved = os.path.join(l.dir, 'replaced')
+    ok('the old specs are kept, 0600', os.path.isdir(saved) and len(os.listdir(saved)) == 2
+       and all(os.stat(os.path.join(saved, f)).st_mode & 0o777 == 0o600 for f in os.listdir(saved)))
+
+    had = fulfillments()
+    emit_request(legacy, lext, 'legacyApproved')
+    ok('an approved requester reaches the bridge', wait_answer('/l', 'legacyApproved'))
+    if answers('/l', 'legacyApproved'):
+        ok('with the job\'s bearer credential', answers('/l', 'legacyApproved')[0]['auth'] == f'Bearer {EA_TOKEN}')
+    ok('and its answer lands on chain, through the legacy operator', wait_fulfillments(had + 1) >= had + 1, f'fulfillments {had} -> {fulfillments()}')
+    approve(False)
+    emit_request(legacy, lext, 'legacyShut')   # still admitted on chain: the contract has not changed
+    ok('an unapproved requester is still admitted on chain, and the job stops before the bridge', not wait_answer('/l', 'legacyShut', 45))
+    approve(True)
+    had = fulfillments()
+    FakeEA.during['legacyMidway'] = lambda: approve(False)
+    emit_request(legacy, lext2, 'legacyMidway')
+    ok('revoked while the adapter works: the bridge was called', wait_answer('/l', 'legacyMidway'))
+    time.sleep(20)
+    ok('and no answer was sent', fulfillments() == had, f'fulfillments {had} -> {fulfillments()}')
+    approve(True)
+
+    print('\n== the migration\'s move: the same jobs on this checkout\'s operator ==')
+    write_install(contract, [lext, lext2])
+    rc, out = job_template(l, V1, 'apply')
+    ok('without --move-to-operator nothing is moved', rc == 1 and 'only by the operator migration' in out
+       and l.job_by_ext(lext)['attributes']['directRequestSpec']['contractAddress'].lower() == legacy.lower(), f'rc={rc}: {out[-300:]}')
+    rc, out = job_template(l, V1, 'apply', '--move-to-operator')
+    ok('with it both jobs move', rc == 0 and 'Replaced 2 job(s)' in out, f'rc={rc}: {out[-400:]}')
+    moved = l.job_by_ext(lext)
+    ok('under the same job id, on the new operator', moved is not None and moved['attributes']['directRequestSpec']['contractAddress'].lower() == contract.lower())
+    rc, out = job_template(l, V1, 'check')
+    ok('check after the move', rc == 0 and 'All 2 job(s)' in out, f'rc={rc}: {out[-300:]}')
+    had = fulfillments()
+    emit_request(contract, lext, 'movedOpen')
+    ok('a request to the new operator reaches the bridge through the moved job', wait_answer('/l', 'movedOpen'))
+    ok('and its answer lands on chain', wait_fulfillments(had + 1) >= had + 1, f'fulfillments {had} -> {fulfillments()}')
+    approve(False)
+    ok('and the new operator refuses an unapproved requester on chain', emit_request(contract, lext, 'movedShut', refused=True))
+    approve(True)
 
     print('\n== each limit cuts a run, at a scale of seconds ==')
     b = Node('b', render_config(max_run='15s', default_timeout='2s'))

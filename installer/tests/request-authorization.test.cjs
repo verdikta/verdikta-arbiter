@@ -57,7 +57,7 @@ test('rejects incomplete configuration before contacting a provider', async () =
       fetchImpl: async () => assert.fail('RPC must not run') }));
   }
 });
-test('upgrade refuses authenticated but ungated jobs when regeneration is declined', () => {
+test('a changed job template does not end the upgrade: declined regeneration means the in-place update', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'verdikta-admission-gate-'));
   try {
     const source = fs.readFileSync(path.join(__dirname, '../bin/upgrade-arbiter.sh'), 'utf8');
@@ -82,11 +82,15 @@ test('upgrade refuses authenticated but ungated jobs when regeneration is declin
         ${gate}
         check_job_spec_template
       `], { encoding: 'utf8', env: { ...process.env, ACCEPT: accept, REPO_CHAINLINK_NODE: repo, TARGET_CHAINLINK_NODE: target } });
-      assert.equal(run('no').status, 1);
-      assert.match(run('no').stdout, /requires request authorization/);
-      // The arbiter is stopped by then: the decline must go through the script's restart.
-      assert.match(run('no').stdout, /ARBITER-RESTARTED/);
+      // Any difference is seen (a name-only check would miss removed edges or gates moved
+      // after work), and the answer to it is the same: the live jobs are replaced under their
+      // own ids after the restart. Nothing ends the upgrade here, and nothing is regenerated.
+      const declined = run('no');
+      assert.equal(declined.status, 0);
+      assert.match(declined.stdout, /updated in place after the restart/);
+      assert.doesNotMatch(declined.stdout, /ARBITER-RESTARTED|REGENERATED/);
       assert.equal(run('yes').status, 0);
+      assert.match(run('yes').stdout, /REGENERATED/);
       assert.doesNotMatch(run('yes').stdout, /ARBITER-RESTARTED/);
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
@@ -94,15 +98,25 @@ test('upgrade refuses authenticated but ungated jobs when regeneration is declin
 test('operator preflight precedes shutdown/job changes and deployment never removes hooks', () => {
   const read = name => fs.readFileSync(path.join(__dirname, '../bin', name), 'utf8');
   const upgrade = read('upgrade-arbiter.sh'), configure = read('configure-node.sh'), deploy = read('deploy-contracts.sh');
-  assert.ok(upgrade.indexOf('check-request-authorization.cjs') < upgrade.indexOf('"$TARGET_DIR/stop-arbiter.sh"'));
+  const modeRead = 'node "$UTIL_DIR/job-template.cjs" mode --install-dir "$TARGET_DIR"';
+  assert.ok(upgrade.indexOf(modeRead) > 0 && upgrade.indexOf(modeRead) < upgrade.indexOf('"$TARGET_DIR/stop-arbiter.sh"'));
+  // The live jobs are measured and replaced after the restart, with no question in between,
+  // and before the timeouts step (which then finds this release's limits already there).
+  const after = upgrade.indexOf('\n# Job template, after the restart.'), timeouts = upgrade.indexOf('\n# Job timeouts, after the restart');
+  assert.ok(after > upgrade.indexOf('"$TARGET_DIR/stop-arbiter.sh"') && after < timeouts);
+  assert.doesNotMatch(upgrade.slice(after, timeouts), /ask_yes_no/);
   // The job template's question is settled before the stop too, and nothing after the stop exits bare.
   const stop = upgrade.indexOf('"$TARGET_DIR/stop-arbiter.sh"');
   assert.ok(upgrade.indexOf('\njob_template_preflight || JOB_PREFLIGHT_RC=$?') > 0);
   assert.ok(upgrade.indexOf('\njob_template_preflight || JOB_PREFLIGHT_RC=$?') < stop);
   const template = upgrade.slice(upgrade.indexOf('\ncheck_job_spec_template() {'), upgrade.indexOf('\n}\n', upgrade.indexOf('\ncheck_job_spec_template() {')));
   assert.doesNotMatch(template, /^\s*exit\b/m, 'check_job_spec_template runs with the arbiter stopped: it must not exit without restarting it');
-  assert.ok(configure.indexOf('check-request-authorization.cjs') < configure.indexOf('ensure_keys_exist "$ARBITER_COUNT"'));
-  assert.ok(configure.indexOf('check-request-authorization.cjs') < configure.indexOf('-X DELETE'));
+  const configureRead = 'node "$INSTALLER_DIR/util/job-template.cjs" mode';
+  assert.ok(configure.indexOf(configureRead) > 0 && configure.indexOf(configureRead) < configure.indexOf('ensure_keys_exist "$ARBITER_COUNT"'));
+  assert.ok(configure.indexOf(configureRead) < configure.indexOf('-X DELETE'));
+  assert.ok(configure.indexOf('ensure_keys_exist "$ARBITER_COUNT"') > 0 && configure.indexOf('-X DELETE') > 0);
+  // A legacy operator's jobs get the keeper gate before the credential is written into them.
+  assert.ok(configure.indexOf('job-template.cjs" gate "$JOB_SPEC_FILE_ARBITER"') < configure.indexOf('render-job "$AUTH_INSTALL_ROOT" "$JOB_SPEC_FILE_ARBITER"'));
   assert.doesNotMatch(deploy, /sed.*OperatorMod|Remove the pre-request hook/);
   const registration = fs.readFileSync(path.join(__dirname, '../../arbiter-operator/scripts/register-oracle-cl.js'), 'utf8');
   assert.ok(registration.indexOf('await ensureRequestAuthorization(') < registration.indexOf('if (pendingJobs.length === 0)'));
